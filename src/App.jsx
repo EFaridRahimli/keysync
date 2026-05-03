@@ -130,6 +130,81 @@ async function spotifyGet(endpoint, token) {
   return res.json();
 }
 
+// ─── Browser audio analysis (replaces Spotify audio-features API) ────────────
+function goertzel(samples, freq, sampleRate) {
+  const k = Math.round(samples.length * freq / sampleRate);
+  const coeff = 2 * Math.cos(2 * Math.PI * k / samples.length);
+  let s1 = 0, s2 = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i] + coeff * s1 - s2;
+    s2 = s1; s1 = s;
+  }
+  return Math.sqrt(s1 * s1 + s2 * s2 - coeff * s1 * s2);
+}
+
+function detectKey(samples, sampleRate) {
+  const chroma = new Float32Array(12);
+  for (let c = 0; c < 12; c++) {
+    for (let oct = 3; oct <= 6; oct++) {
+      chroma[c] += goertzel(samples, 440 * Math.pow(2, (c + (oct + 1) * 12 - 69) / 12), sampleRate);
+    }
+  }
+  const peak = Math.max(...chroma);
+  if (peak > 0) for (let i = 0; i < 12; i++) chroma[i] /= peak;
+  const maj = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+  const min = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+  let key = 0, mode = 1, best = -Infinity;
+  for (let r = 0; r < 12; r++) {
+    let ms = 0, ns = 0;
+    for (let i = 0; i < 12; i++) {
+      ms += chroma[(i + r) % 12] * maj[i];
+      ns += chroma[(i + r) % 12] * min[i];
+    }
+    if (ms > best) { best = ms; key = r; mode = 1; }
+    if (ns > best) { best = ns; key = r; mode = 0; }
+  }
+  return { key, mode };
+}
+
+function detectBPM(samples, sampleRate) {
+  const frameSize = Math.round(sampleRate * 0.01);
+  const n = Math.floor(samples.length / frameSize);
+  const energy = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = 0; j < frameSize; j++) s += samples[i * frameSize + j] ** 2;
+    energy[i] = s;
+  }
+  const onset = new Float32Array(n);
+  for (let i = 1; i < n; i++) onset[i] = Math.max(0, energy[i] - energy[i - 1]);
+  const fps = sampleRate / frameSize;
+  const minL = Math.floor(fps * 60 / 200);
+  const maxL = Math.ceil(fps * 60 / 60);
+  let best = -Infinity, bestBPM = 120;
+  for (let lag = minL; lag <= maxL; lag++) {
+    let score = 0;
+    for (let i = 0; i < n - lag; i++) score += onset[i] * onset[i + lag];
+    if (score > best) { best = score; bestBPM = (fps * 60) / lag; }
+  }
+  return Math.round(bestBPM);
+}
+
+async function analyzeTrackAudio(previewUrl) {
+  const res = await fetch(previewUrl);
+  if (!res.ok) throw new Error(`Preview fetch failed (${res.status})`);
+  const buf = await res.arrayBuffer();
+  const ctx = new AudioContext();
+  const audio = await ctx.decodeAudioData(buf);
+  await ctx.close();
+  const srcRate = audio.sampleRate;
+  const dstRate = 11025;
+  const src = audio.getChannelData(0);
+  const len = Math.floor(src.length * dstRate / srcRate);
+  const samples = new Float32Array(len);
+  for (let i = 0; i < len; i++) samples[i] = src[Math.floor(i * srcRate / dstRate)];
+  return { ...detectKey(samples, dstRate), tempo: detectBPM(samples, dstRate) };
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [token, setToken] = useState(
@@ -214,15 +289,18 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        const features = await spotifyGet(`/audio-features/${track.id}`, token);
+        if (!track.preview_url) {
+          throw new Error("No 30-second preview available for this track — try another.");
+        }
+        const features = await analyzeTrackAudio(track.preview_url);
         setAudioFeatures(features);
       } catch (e) {
-        setError("Couldn't fetch audio features: " + e.message);
+        setError("Couldn't analyze track: " + e.message);
       } finally {
         setLoading(false);
       }
     },
-    [token],
+    [],
   );
 
   const findMatches = useCallback(async () => {
@@ -233,8 +311,11 @@ export default function App() {
     try {
       let tracks = [];
       if (matchSource === "recommendations") {
+        const tempo = Math.round(audioFeatures.tempo);
         const data = await spotifyGet(
-          `/recommendations?seed_tracks=${selectedTrack.id}&limit=100&target_tempo=${Math.round(audioFeatures.tempo)}&target_key=${audioFeatures.key}&target_mode=${audioFeatures.mode}`,
+          `/recommendations?seed_tracks=${selectedTrack.id}&limit=50` +
+            `&target_key=${audioFeatures.key}&target_mode=${audioFeatures.mode}` +
+            `&target_tempo=${tempo}&min_tempo=${tempo - bpmTolerance}&max_tempo=${tempo + bpmTolerance}`,
           token,
         );
         tracks = data.tracks;
@@ -257,32 +338,34 @@ export default function App() {
         tracks = data.items;
       }
 
-      const ids = tracks.map((t) => t.id).filter(Boolean);
-      let allFeatures = [];
-      for (let i = 0; i < ids.length; i += 100) {
-        const chunk = ids.slice(i, i + 100).join(",");
-        const data = await spotifyGet(`/audio-features?ids=${chunk}`, token);
-        allFeatures = allFeatures.concat(data.audio_features ?? []);
-      }
-
+      // Analyze each candidate track's audio to get key/BPM for filtering.
+      // Runs in parallel batches of 5 to avoid overwhelming the browser.
+      const candidates = tracks
+        .filter((t) => t.id !== selectedTrack.id && t.preview_url)
+        .slice(0, 50);
+      const BATCH = 5;
       const matched = [];
-      for (let i = 0; i < tracks.length; i++) {
-        const feat = allFeatures[i];
-        if (!feat) continue;
-        if (tracks[i].id === selectedTrack.id) continue;
-        const sameKey =
-          feat.key === audioFeatures.key && feat.mode === audioFeatures.mode;
-        const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
-        const halfDouble =
-          Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
-          Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
-        if (sameKey && (bpmDiff <= bpmTolerance || halfDouble)) {
-          matched.push({
-            track: tracks[i],
-            features: feat,
-            bpmDiff: Math.round(bpmDiff * 10) / 10,
-            isHalfDouble: bpmDiff > bpmTolerance && halfDouble,
-          });
+      for (let i = 0; i < candidates.length; i += BATCH) {
+        const batch = candidates.slice(i, i + BATCH);
+        const results = await Promise.allSettled(
+          batch.map((t) => analyzeTrackAudio(t.preview_url)),
+        );
+        for (let j = 0; j < batch.length; j++) {
+          if (results[j].status !== "fulfilled") continue;
+          const feat = results[j].value;
+          if (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode) continue;
+          const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
+          const halfDouble =
+            Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
+            Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
+          if (bpmDiff <= bpmTolerance || halfDouble) {
+            matched.push({
+              track: batch[j],
+              features: feat,
+              bpmDiff: Math.round(bpmDiff * 10) / 10,
+              isHalfDouble: bpmDiff > bpmTolerance && halfDouble,
+            });
+          }
         }
       }
       matched.sort((a, b) => a.bpmDiff - b.bpmDiff);
@@ -377,6 +460,13 @@ export default function App() {
           </section>
         )}
 
+        {/* ── Analyzing indicator ── */}
+        {selectedTrack && loading && !audioFeatures && (
+          <p style={{ color: "#1db954", textAlign: "center", marginTop: 8 }}>
+            Analyzing audio preview…
+          </p>
+        )}
+
         {/* ── Selected Track ── */}
         {selectedTrack && audioFeatures && (
           <section style={styles.card}>
@@ -454,7 +544,7 @@ export default function App() {
                 onClick={findMatches}
                 disabled={matchLoading}
               >
-                {matchLoading ? "Scanning…" : "Find Harmonic Matches"}
+                {matchLoading ? "Analyzing audio…" : "Find Harmonic Matches"}
               </button>
             </div>
           </section>
