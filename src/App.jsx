@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 
 const CLIENT_ID = "ca3f485852fc46b891cbd34d7d700f4c";
-const REDIRECT_URI = "https://keysync-beta.vercel.app";
+const REDIRECT_URI =
+  "https://keysync-7otxcm6ge-efaridrahimlis-projects.vercel.app";
 const SCOPES = "user-library-read user-top-read user-read-recently-played";
 
 // ─── Spotify key map ──────────────────────────────────────────────────────────
