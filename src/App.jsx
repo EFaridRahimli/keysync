@@ -1,8 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 
 const CLIENT_ID = "ca3f485852fc46b891cbd34d7d700f4c";
-const REDIRECT_URI =
-  "https://keysync-7otxcm6ge-efaridrahimlis-projects.vercel.app";
+const REDIRECT_URI = window.location.origin;
 const SCOPES = "user-library-read user-top-read user-read-recently-played";
 
 // ─── Spotify key map ──────────────────────────────────────────────────────────
@@ -161,14 +160,18 @@ export default function App() {
 
     if (code) {
       window.history.replaceState(null, "", window.location.pathname);
+      let cancelled = false;
       exchangeCodeForToken(code)
         .then((t) => {
+          if (cancelled) return;
           localStorage.setItem("spotify_token", t);
           setToken(t);
         })
         .catch((e) => {
+          if (cancelled) return;
           setError(e.message);
         });
+      return () => { cancelled = true; };
     }
   }, []);
 
