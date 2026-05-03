@@ -272,7 +272,7 @@ export default function App() {
         `/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`,
         token,
       );
-      setSearchResults(data.tracks.items.filter((t) => t.preview_url));
+      setSearchResults(data.tracks.items);
     } catch (e) {
       setError(e.message);
       if (e.message.includes("401")) logout();
@@ -289,13 +289,15 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        if (!track.preview_url) {
-          throw new Error("No 30-second preview available for this track — try another.");
+        if (track.preview_url) {
+          const features = await analyzeTrackAudio(track.preview_url);
+          setAudioFeatures(features);
+        } else {
+          setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
         }
-        const features = await analyzeTrackAudio(track.preview_url);
-        setAudioFeatures(features);
       } catch (e) {
         setError("Couldn't analyze track: " + e.message);
+        setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
       } finally {
         setLoading(false);
       }
@@ -311,11 +313,14 @@ export default function App() {
     try {
       let tracks = [];
       if (matchSource === "recommendations") {
+        const hasAudio = audioFeatures.key !== -1;
         const tempo = Math.round(audioFeatures.tempo);
+        const params = hasAudio
+          ? `&target_key=${audioFeatures.key}&target_mode=${audioFeatures.mode}` +
+            `&target_tempo=${tempo}&min_tempo=${tempo - bpmTolerance}&max_tempo=${tempo + bpmTolerance}`
+          : "";
         const data = await spotifyGet(
-          `/recommendations?seed_tracks=${selectedTrack.id}&limit=50` +
-            `&target_key=${audioFeatures.key}&target_mode=${audioFeatures.mode}` +
-            `&target_tempo=${tempo}&min_tempo=${tempo - bpmTolerance}&max_tempo=${tempo + bpmTolerance}`,
+          `/recommendations?seed_tracks=${selectedTrack.id}&limit=50${params}`,
           token,
         );
         tracks = data.tracks;
@@ -336,6 +341,17 @@ export default function App() {
           token,
         );
         tracks = data.items;
+      }
+
+      const hasAudio = audioFeatures.key !== -1;
+      if (!hasAudio) {
+        // No key/BPM data — surface all candidates without harmonic filtering.
+        setMatches(
+          tracks
+            .filter((t) => t.id !== selectedTrack.id)
+            .map((track) => ({ track, features: null, bpmDiff: null, isHalfDouble: false })),
+        );
+        return;
       }
 
       // Analyze each candidate track's audio to get key/BPM for filtering.
@@ -432,11 +448,6 @@ export default function App() {
               </button>
             </div>
             {error && <p style={styles.error}>{error}</p>}
-            {searchResults.length === 0 && !loading && searchQuery && !error && (
-              <p style={{ color: "#666", fontSize: "13px", marginTop: "12px" }}>
-                No results with a playable preview — try a different search.
-              </p>
-            )}
             {searchResults.length > 0 && (
               <ul style={styles.resultList}>
                 {searchResults.map((t) => (
@@ -494,7 +505,7 @@ export default function App() {
                     🎵 {keyLabel(audioFeatures.key, audioFeatures.mode)}
                   </span>
                   <span style={styles.badge}>
-                    ⚡ {Math.round(audioFeatures.tempo)} BPM
+                    ⚡ {audioFeatures.tempo > 0 ? `${Math.round(audioFeatures.tempo)} BPM` : "BPM unknown"}
                   </span>
                   <span
                     style={{
@@ -584,20 +595,22 @@ export default function App() {
                       {track.artists.map((a) => a.name).join(", ")}
                     </div>
                   </div>
-                  <div style={styles.matchMeta}>
-                    <span style={styles.matchBadge}>
-                      {Math.round(features.tempo)} BPM
-                    </span>
-                    <span
-                      style={{
-                        ...styles.matchBadge,
-                        opacity: 0.6,
-                        fontSize: "11px",
-                      }}
-                    >
-                      {isHalfDouble ? "½×/2×" : `Δ${bpmDiff}`}
-                    </span>
-                  </div>
+                  {features && (
+                    <div style={styles.matchMeta}>
+                      <span style={styles.matchBadge}>
+                        {Math.round(features.tempo)} BPM
+                      </span>
+                      <span
+                        style={{
+                          ...styles.matchBadge,
+                          opacity: 0.6,
+                          fontSize: "11px",
+                        }}
+                      >
+                        {isHalfDouble ? "½×/2×" : `Δ${bpmDiff}`}
+                      </span>
+                    </div>
+                  )}
                   <a
                     href={track.external_urls?.spotify}
                     target="_blank"
