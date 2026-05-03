@@ -269,10 +269,10 @@ export default function App() {
     setMatches([]);
     try {
       const data = await spotifyGet(
-        `/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=8`,
+        `/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`,
         token,
       );
-      setSearchResults(data.tracks.items);
+      setSearchResults(data.tracks.items.filter((t) => t.preview_url));
     } catch (e) {
       setError(e.message);
       if (e.message.includes("401")) logout();
@@ -432,6 +432,11 @@ export default function App() {
               </button>
             </div>
             {error && <p style={styles.error}>{error}</p>}
+            {searchResults.length === 0 && !loading && searchQuery && !error && (
+              <p style={{ color: "#666", fontSize: "13px", marginTop: "12px" }}>
+                No results with a playable preview — try a different search.
+              </p>
+            )}
             {searchResults.length > 0 && (
               <ul style={styles.resultList}>
                 {searchResults.map((t) => (
