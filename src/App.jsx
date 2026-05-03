@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 const CLIENT_ID = "ca3f485852fc46b891cbd34d7d700f4c";
 const REDIRECT_URI =
@@ -25,7 +25,6 @@ function keyLabel(key, mode) {
   if (key === -1) return "Unknown";
   return `${KEY_NAMES[key]} ${MODE_NAMES[mode] ?? ""}`.trim();
 }
-
 const CAMELOT = {
   "C Major": "8B",
   "A Minor": "8A",
@@ -80,7 +79,7 @@ async function generateCodeChallenge(verifier) {
 async function loginWithSpotify() {
   const verifier = generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
-  sessionStorage.setItem("pkce_verifier", verifier);
+  localStorage.setItem("pkce_verifier", verifier);
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     response_type: "code",
@@ -93,7 +92,10 @@ async function loginWithSpotify() {
 }
 
 async function exchangeCodeForToken(code) {
-  const verifier = sessionStorage.getItem("pkce_verifier");
+  const verifier = localStorage.getItem("pkce_verifier");
+  if (!verifier)
+    throw new Error("No PKCE verifier found. Please try logging in again.");
+
   const body = new URLSearchParams({
     client_id: CLIENT_ID,
     grant_type: "authorization_code",
@@ -101,12 +103,20 @@ async function exchangeCodeForToken(code) {
     redirect_uri: REDIRECT_URI,
     code_verifier: verifier,
   });
+
   const res = await fetch("https://accounts.spotify.com/api/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
+    body: body.toString(),
   });
+
   const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(
+      data.error_description ?? data.error ?? "Token exchange failed",
+    );
+  }
+  localStorage.removeItem("pkce_verifier");
   return data.access_token;
 }
 
@@ -124,7 +134,7 @@ async function spotifyGet(endpoint, token) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [token, setToken] = useState(
-    () => sessionStorage.getItem("spotify_token") ?? "",
+    () => localStorage.getItem("spotify_token") ?? "",
   );
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
@@ -141,18 +151,35 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
-    if (code && !token) {
+    const errorParam = params.get("error");
+
+    if (errorParam) {
+      setError("Spotify login failed: " + errorParam);
       window.history.replaceState(null, "", window.location.pathname);
-      exchangeCodeForToken(code).then((t) => {
-        if (t) {
-          sessionStorage.setItem("spotify_token", t);
+      return;
+    }
+
+    if (code) {
+      window.history.replaceState(null, "", window.location.pathname);
+      exchangeCodeForToken(code)
+        .then((t) => {
+          localStorage.setItem("spotify_token", t);
           setToken(t);
-        } else {
-          setError("Failed to get access token. Please try again.");
-        }
-      });
+        })
+        .catch((e) => {
+          setError(e.message);
+        });
     }
   }, []);
+
+  function logout() {
+    localStorage.removeItem("spotify_token");
+    setToken("");
+    setSelectedTrack(null);
+    setAudioFeatures(null);
+    setMatches([]);
+    setSearchResults([]);
+  }
 
   const searchTracks = useCallback(async () => {
     if (!searchQuery.trim()) return;
@@ -170,10 +197,7 @@ export default function App() {
       setSearchResults(data.tracks.items);
     } catch (e) {
       setError(e.message);
-      if (e.message.includes("401")) {
-        sessionStorage.removeItem("spotify_token");
-        setToken("");
-      }
+      if (e.message.includes("401")) logout();
     } finally {
       setLoading(false);
     }
@@ -262,10 +286,7 @@ export default function App() {
       setMatches(matched);
     } catch (e) {
       setError(e.message);
-      if (e.message.includes("401")) {
-        sessionStorage.removeItem("spotify_token");
-        setToken("");
-      }
+      if (e.message.includes("401")) logout();
     } finally {
       setMatchLoading(false);
     }
@@ -282,6 +303,11 @@ export default function App() {
           <span style={styles.logoText}>KeySync</span>
         </div>
         <p style={styles.tagline}>Find tracks that mix harmonically</p>
+        {token && (
+          <button style={styles.logoutBtn} onClick={logout}>
+            Logout
+          </button>
+        )}
       </header>
 
       <main style={styles.main}>
@@ -501,6 +527,7 @@ export default function App() {
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = {
   root: {
     minHeight: "100vh",
@@ -558,6 +585,17 @@ const styles = {
     textTransform: "uppercase",
     margin: 0,
   },
+  logoutBtn: {
+    marginTop: "12px",
+    background: "transparent",
+    border: "1px solid #333",
+    color: "#555",
+    borderRadius: "6px",
+    padding: "4px 12px",
+    fontSize: "12px",
+    cursor: "pointer",
+    fontFamily: "inherit",
+  },
   main: {
     maxWidth: "680px",
     margin: "0 auto",
@@ -613,15 +651,6 @@ const styles = {
     letterSpacing: "0.5px",
     fontFamily: "inherit",
   },
-  link: { color: "#1db954", textDecoration: "none" },
-  code: {
-    background: "rgba(29,185,84,0.12)",
-    color: "#1db954",
-    padding: "2px 6px",
-    borderRadius: "4px",
-    fontSize: "12px",
-    wordBreak: "break-all",
-  },
   error: {
     color: "#ff5f5f",
     fontSize: "13px",
@@ -629,6 +658,7 @@ const styles = {
     background: "rgba(255,95,95,0.08)",
     padding: "8px 12px",
     borderRadius: "6px",
+    marginBottom: "12px",
   },
   resultList: {
     listStyle: "none",
