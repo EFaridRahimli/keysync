@@ -1,6 +1,10 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
-// ─── Spotify key map (Pitch Class notation) ──────────────────────────────────
+const CLIENT_ID = "ca3f485852fc46b891cbd34d7d700f4c";
+const REDIRECT_URI = "https://keysync-beta.vercel.app";
+const SCOPES = "user-library-read user-top-read user-read-recently-played";
+
+// ─── Spotify key map ──────────────────────────────────────────────────────────
 const KEY_NAMES = [
   "C",
   "C♯/D♭",
@@ -16,13 +20,11 @@ const KEY_NAMES = [
   "B",
 ];
 const MODE_NAMES = { 0: "Minor", 1: "Major" };
-
 function keyLabel(key, mode) {
   if (key === -1) return "Unknown";
   return `${KEY_NAMES[key]} ${MODE_NAMES[mode] ?? ""}`.trim();
 }
 
-// Camelot wheel for harmonic mixing compatibility
 const CAMELOT = {
   "C Major": "8B",
   "A Minor": "8A",
@@ -49,32 +51,62 @@ const CAMELOT = {
   "F Major": "7B",
   "D Minor": "7A",
 };
-
 function getCamelot(key, mode) {
   const label = `${KEY_NAMES[key] ?? ""} ${MODE_NAMES[mode] ?? ""}`.trim();
   return CAMELOT[label] ?? "?";
 }
 
-// ─── BPM tolerance slider default ────────────────────────────────────────────
-const DEFAULT_BPM_TOLERANCE = 5;
+// ─── PKCE helpers ─────────────────────────────────────────────────────────────
+function generateCodeVerifier() {
+  const array = new Uint8Array(64);
+  crypto.getRandomValues(array);
+  return btoa(String.fromCharCode(...array))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+}
 
-// ─── Spotify API helpers ──────────────────────────────────────────────────────
-const SCOPES = [
-  "user-library-read",
-  "playlist-read-private",
-  "user-top-read",
-  "user-read-recently-played",
-].join(" ");
+async function generateCodeChallenge(verifier) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+}
 
-function buildAuthUrl(clientId, redirectUri) {
+async function loginWithSpotify() {
+  const verifier = generateCodeVerifier();
+  const challenge = await generateCodeChallenge(verifier);
+  sessionStorage.setItem("pkce_verifier", verifier);
   const params = new URLSearchParams({
-    client_id: clientId,
-    response_type: "token",
-    redirect_uri: redirectUri,
+    client_id: CLIENT_ID,
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
     scope: SCOPES,
-    show_dialog: "true",
+    code_challenge_method: "S256",
+    code_challenge: challenge,
   });
-  return `https://accounts.spotify.com/authorize?${params}`;
+  window.location.href = `https://accounts.spotify.com/authorize?${params}`;
+}
+
+async function exchangeCodeForToken(code) {
+  const verifier = sessionStorage.getItem("pkce_verifier");
+  const body = new URLSearchParams({
+    client_id: CLIENT_ID,
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: REDIRECT_URI,
+    code_verifier: verifier,
+  });
+  const res = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const data = await res.json();
+  return data.access_token;
 }
 
 async function spotifyGet(endpoint, token) {
@@ -90,16 +122,9 @@ async function spotifyGet(endpoint, token) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [clientId, setClientId] = useState("ca3f485852fc46b891cbd34d7d700f4c");
-  const [token, setToken] = useState(() => {
-    // Parse token from URL hash after Spotify redirect
-    const hash = window.location.hash;
-    const params = new URLSearchParams(hash.replace("#", "?"));
-    const t = params.get("access_token");
-    if (t) window.history.replaceState(null, "", window.location.pathname);
-    return t ?? "";
-  });
-
+  const [token, setToken] = useState(
+    () => sessionStorage.getItem("spotify_token") ?? "",
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [selectedTrack, setSelectedTrack] = useState(null);
@@ -108,19 +133,25 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [matchLoading, setMatchLoading] = useState(false);
   const [error, setError] = useState("");
-  const [bpmTolerance, setBpmTolerance] = useState(DEFAULT_BPM_TOLERANCE);
+  const [bpmTolerance, setBpmTolerance] = useState(5);
   const [matchSource, setMatchSource] = useState("recommendations");
-  const searchRef = useRef(null);
 
-  const redirectUri = window.location.origin + window.location.pathname;
-
-  function login() {
-    if (!clientId.trim()) {
-      setError("Enter your Spotify Client ID first.");
-      return;
+  // Handle PKCE callback
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (code && !token) {
+      window.history.replaceState(null, "", window.location.pathname);
+      exchangeCodeForToken(code).then((t) => {
+        if (t) {
+          sessionStorage.setItem("spotify_token", t);
+          setToken(t);
+        } else {
+          setError("Failed to get access token. Please try again.");
+        }
+      });
     }
-    window.location.href = buildAuthUrl(clientId.trim(), redirectUri);
-  }
+  }, []);
 
   const searchTracks = useCallback(async () => {
     if (!searchQuery.trim()) return;
@@ -138,6 +169,10 @@ export default function App() {
       setSearchResults(data.tracks.items);
     } catch (e) {
       setError(e.message);
+      if (e.message.includes("401")) {
+        sessionStorage.removeItem("spotify_token");
+        setToken("");
+      }
     } finally {
       setLoading(false);
     }
@@ -169,16 +204,13 @@ export default function App() {
     setMatches([]);
     try {
       let tracks = [];
-
       if (matchSource === "recommendations") {
-        // Spotify recommendations seeded by the track, filtered client-side
         const data = await spotifyGet(
           `/recommendations?seed_tracks=${selectedTrack.id}&limit=100&target_tempo=${Math.round(audioFeatures.tempo)}&target_key=${audioFeatures.key}&target_mode=${audioFeatures.mode}`,
           token,
         );
         tracks = data.tracks;
       } else if (matchSource === "library") {
-        // Scan saved tracks (up to 200)
         let all = [];
         for (let offset = 0; offset < 200; offset += 50) {
           const data = await spotifyGet(
@@ -197,7 +229,6 @@ export default function App() {
         tracks = data.items;
       }
 
-      // Fetch audio features in batches of 100
       const ids = tracks.map((t) => t.id).filter(Boolean);
       let allFeatures = [];
       for (let i = 0; i < ids.length; i += 100) {
@@ -206,7 +237,6 @@ export default function App() {
         allFeatures = allFeatures.concat(data.audio_features ?? []);
       }
 
-      // Match: same key + mode, BPM within tolerance
       const matched = [];
       for (let i = 0; i < tracks.length; i++) {
         const feat = allFeatures[i];
@@ -215,7 +245,6 @@ export default function App() {
         const sameKey =
           feat.key === audioFeatures.key && feat.mode === audioFeatures.mode;
         const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
-        // Also allow double/half tempo matches
         const halfDouble =
           Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
           Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
@@ -232,15 +261,17 @@ export default function App() {
       setMatches(matched);
     } catch (e) {
       setError(e.message);
+      if (e.message.includes("401")) {
+        sessionStorage.removeItem("spotify_token");
+        setToken("");
+      }
     } finally {
       setMatchLoading(false);
     }
   }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource]);
 
-  // ─── UI ────────────────────────────────────────────────────────────────────
   return (
     <div style={styles.root}>
-      {/* Animated background grid */}
       <div style={styles.bgGrid} />
       <div style={styles.bgGlow} />
 
@@ -253,36 +284,17 @@ export default function App() {
       </header>
 
       <main style={styles.main}>
-        {/* ── Auth Panel ── */}
+        {/* ── Login ── */}
         {!token && (
           <section style={styles.card}>
             <h2 style={styles.cardTitle}>Connect Spotify</h2>
             <p style={styles.cardDesc}>
-              You need a <strong>Spotify Developer App</strong>. Create one at{" "}
-              <a
-                href="https://developer.spotify.com/dashboard"
-                target="_blank"
-                rel="noreferrer"
-                style={styles.link}
-              >
-                developer.spotify.com
-              </a>
-              , add <code style={styles.code}>{redirectUri}</code> as a Redirect
-              URI, then paste your Client ID below.
+              Log in with your Spotify account to get started.
             </p>
-            <div style={styles.inputRow}>
-              <input
-                style={styles.input}
-                placeholder="Spotify Client ID"
-                value={clientId}
-                onChange={(e) => setClientId(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && login()}
-              />
-              <button style={styles.btnPrimary} onClick={login}>
-                Login with Spotify
-              </button>
-            </div>
             {error && <p style={styles.error}>{error}</p>}
+            <button style={styles.btnPrimary} onClick={loginWithSpotify}>
+              Login with Spotify
+            </button>
           </section>
         )}
 
@@ -292,7 +304,6 @@ export default function App() {
             <h2 style={styles.cardTitle}>Search a Track</h2>
             <div style={styles.inputRow}>
               <input
-                ref={searchRef}
                 style={styles.input}
                 placeholder="Artist, song name…"
                 value={searchQuery}
@@ -308,8 +319,6 @@ export default function App() {
               </button>
             </div>
             {error && <p style={styles.error}>{error}</p>}
-
-            {/* Search results */}
             {searchResults.length > 0 && (
               <ul style={styles.resultList}>
                 {searchResults.map((t) => (
@@ -338,7 +347,7 @@ export default function App() {
           </section>
         )}
 
-        {/* ── Selected Track Info ── */}
+        {/* ── Selected Track ── */}
         {selectedTrack && audioFeatures && (
           <section style={styles.card}>
             <div style={styles.selectedTrackRow}>
@@ -374,8 +383,6 @@ export default function App() {
                 </div>
               </div>
             </div>
-
-            {/* Match controls */}
             <div style={styles.controls}>
               <div style={styles.controlGroup}>
                 <label style={styles.label}>
@@ -423,7 +430,7 @@ export default function App() {
           </section>
         )}
 
-        {/* ── Results ── */}
+        {/* ── Matches ── */}
         {matches.length > 0 && (
           <section style={styles.card}>
             <h2 style={styles.cardTitle}>
@@ -481,7 +488,7 @@ export default function App() {
         )}
 
         {matches.length === 0 &&
-          matchLoading === false &&
+          !matchLoading &&
           audioFeatures &&
           selectedTrack && (
             <p style={{ color: "#666", textAlign: "center", marginTop: 8 }}>
@@ -493,7 +500,6 @@ export default function App() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = {
   root: {
     minHeight: "100vh",
@@ -537,10 +543,7 @@ const styles = {
     gap: "12px",
     marginBottom: "8px",
   },
-  logoIcon: {
-    fontSize: "36px",
-    color: "#1db954",
-  },
+  logoIcon: { fontSize: "36px", color: "#1db954" },
   logoText: {
     fontSize: "36px",
     fontWeight: "700",
@@ -584,10 +587,7 @@ const styles = {
     color: "#666",
     lineHeight: "1.6",
   },
-  inputRow: {
-    display: "flex",
-    gap: "10px",
-  },
+  inputRow: { display: "flex", gap: "10px" },
   input: {
     flex: 1,
     background: "rgba(255,255,255,0.05)",
@@ -612,10 +612,7 @@ const styles = {
     letterSpacing: "0.5px",
     fontFamily: "inherit",
   },
-  link: {
-    color: "#1db954",
-    textDecoration: "none",
-  },
+  link: { color: "#1db954", textDecoration: "none" },
   code: {
     background: "rgba(29,185,84,0.12)",
     color: "#1db954",
@@ -647,7 +644,6 @@ const styles = {
     padding: "10px 12px",
     borderRadius: "8px",
     cursor: "pointer",
-    transition: "background 0.15s",
     background: "rgba(255,255,255,0.03)",
     border: "1px solid transparent",
   },
@@ -659,16 +655,8 @@ const styles = {
     flexShrink: 0,
     background: "#222",
   },
-  trackName: {
-    fontSize: "14px",
-    color: "#e8e8f0",
-    fontWeight: "500",
-  },
-  artistName: {
-    fontSize: "12px",
-    color: "#666",
-    marginTop: "2px",
-  },
+  trackName: { fontSize: "14px", color: "#e8e8f0", fontWeight: "500" },
+  artistName: { fontSize: "12px", color: "#666", marginTop: "2px" },
   selectedTrackRow: {
     display: "flex",
     gap: "16px",
@@ -689,16 +677,8 @@ const styles = {
     color: "#fff",
     marginBottom: "4px",
   },
-  selectedArtist: {
-    fontSize: "13px",
-    color: "#888",
-    marginBottom: "10px",
-  },
-  badgeRow: {
-    display: "flex",
-    gap: "8px",
-    flexWrap: "wrap",
-  },
+  selectedArtist: { fontSize: "13px", color: "#888", marginBottom: "10px" },
+  badgeRow: { display: "flex", gap: "8px", flexWrap: "wrap" },
   badge: {
     background: "#1a1a2e",
     border: "1px solid rgba(255,255,255,0.1)",
@@ -715,27 +695,15 @@ const styles = {
     borderTop: "1px solid rgba(255,255,255,0.06)",
     paddingTop: "20px",
   },
-  controlGroup: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-  },
+  controlGroup: { display: "flex", flexDirection: "column", gap: "8px" },
   label: {
     fontSize: "12px",
     color: "#666",
     letterSpacing: "1px",
     textTransform: "uppercase",
   },
-  slider: {
-    accentColor: "#1db954",
-    width: "100%",
-    cursor: "pointer",
-  },
-  radioGroup: {
-    display: "flex",
-    gap: "16px",
-    flexWrap: "wrap",
-  },
+  slider: { accentColor: "#1db954", width: "100%", cursor: "pointer" },
+  radioGroup: { display: "flex", gap: "16px", flexWrap: "wrap" },
   radioLabel: {
     display: "flex",
     alignItems: "center",
