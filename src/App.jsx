@@ -136,7 +136,10 @@ function reccoToTrack(t) {
   return {
     id: spotifyId,
     name: t.trackTitle,
-    artists: (t.artists ?? []).map((a) => ({ name: a.name })),
+    artists: (t.artists ?? []).map((a) => ({
+      name: a.name,
+      id: a.href?.match(/artist\/([A-Za-z0-9]+)/)?.[1] ?? null,
+    })),
     album: { images: [] },
     external_urls: { spotify: t.href ?? "" },
   };
@@ -172,6 +175,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [bpmTolerance, setBpmTolerance] = useState(5);
   const [matchSource, setMatchSource] = useState("recommendations");
+  const [trackGenres, setTrackGenres] = useState([]);
+  const [filterByGenre, setFilterByGenre] = useState(false);
 
   // Handle PKCE callback
   useEffect(() => {
@@ -209,6 +214,7 @@ export default function App() {
     setAudioFeatures(null);
     setMatches([]);
     setSearchResults([]);
+    setTrackGenres([]);
   }
 
   const searchTracks = useCallback(async () => {
@@ -241,12 +247,19 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        const [feat] = await reccoFeatures([track.id]);
+        const artistId = track.artists?.[0]?.id;
+        const [[feat], artistData] = await Promise.all([
+          reccoFeatures([track.id]),
+          artistId
+            ? spotifyGet(`/artists/${artistId}`, token).catch(() => null)
+            : Promise.resolve(null),
+        ]);
         setAudioFeatures(
           feat
             ? { key: feat.key, mode: feat.mode, tempo: feat.tempo }
             : { key: -1, mode: 0, tempo: 0 },
         );
+        setTrackGenres(artistData?.genres ?? []);
       } catch (e) {
         setError("Couldn't fetch audio features: " + e.message);
         setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
@@ -266,6 +279,21 @@ export default function App() {
 
     const spotifyIdFromHref = (href) =>
       href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
+
+    const applyGenreFilter = async (list) => {
+      if (!filterByGenre || !trackGenres.length) return list;
+      const artistIds = [...new Set(list.map((t) => t.artists?.[0]?.id).filter(Boolean))];
+      const genreMap = {};
+      for (let i = 0; i < artistIds.length; i += 50) {
+        const batch = artistIds.slice(i, i + 50);
+        const data = await spotifyGet(`/artists?ids=${batch.join(",")}`, token).catch(() => null);
+        (data?.artists ?? []).forEach((a) => { if (a) genreMap[a.id] = a.genres ?? []; });
+      }
+      return list.filter((t) => {
+        const g = genreMap[t.artists?.[0]?.id] ?? [];
+        return g.some((genre) => trackGenres.includes(genre));
+      });
+    };
 
     try {
       if (matchSource === "recommendations") {
@@ -306,17 +334,17 @@ export default function App() {
           if (sid) featMap[sid] = f;
         });
 
+        const enriched = (spotifyTracks ?? []).filter(Boolean);
+        const genreFiltered = await applyGenreFilter(enriched);
         setMatches(
-          (spotifyTracks ?? [])
-            .filter(Boolean)
-            .map((t) => {
-              const feat = featMap[t.id] ?? null;
-              const bpmDiff =
-                feat?.tempo != null
-                  ? Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10
-                  : null;
-              return { track: t, features: feat, bpmDiff, isHalfDouble: false };
-            }),
+          genreFiltered.map((t) => {
+            const feat = featMap[t.id] ?? null;
+            const bpmDiff =
+              feat?.tempo != null
+                ? Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10
+                : null;
+            return { track: t, features: feat, bpmDiff, isHalfDouble: false };
+          }),
         );
         return;
       }
@@ -346,9 +374,11 @@ export default function App() {
         .filter((t) => t && t.id !== selectedTrack.id)
         .slice(0, 200);
 
+      const genreCandidates = await applyGenreFilter(candidates);
+
       if (!hasAudio) {
         setMatches(
-          candidates.map((track) => ({
+          genreCandidates.map((track) => ({
             track,
             features: null,
             bpmDiff: null,
@@ -361,8 +391,8 @@ export default function App() {
       // Batch-fetch ReccoBeats audio features (40 Spotify IDs per call)
       const featMap = {};
       const BATCH = 40;
-      for (let i = 0; i < candidates.length; i += BATCH) {
-        const ids = candidates.slice(i, i + BATCH).map((t) => t.id);
+      for (let i = 0; i < genreCandidates.length; i += BATCH) {
+        const ids = genreCandidates.slice(i, i + BATCH).map((t) => t.id);
         const feats = await reccoFeatures(ids);
         feats.forEach((f) => {
           const sid = spotifyIdFromHref(f.href);
@@ -371,7 +401,7 @@ export default function App() {
       }
 
       const matched = [];
-      for (const track of candidates) {
+      for (const track of genreCandidates) {
         const feat = featMap[track.id];
         if (!feat || feat.key === -1) continue;
         if (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode)
@@ -398,7 +428,7 @@ export default function App() {
     } finally {
       setMatchLoading(false);
     }
-  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource]);
+  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres]);
 
   return (
     <div style={styles.root}>
@@ -560,6 +590,23 @@ export default function App() {
                     </label>
                   ))}
                 </div>
+              </div>
+              <div style={styles.controlGroup}>
+                <label style={styles.label}>Filters</label>
+                <label style={styles.radioLabel}>
+                  <input
+                    type="checkbox"
+                    checked={filterByGenre}
+                    onChange={(e) => setFilterByGenre(e.target.checked)}
+                    style={{ accentColor: "#1db954" }}
+                  />
+                  Same genre only
+                  {trackGenres.length > 0 && (
+                    <span style={{ color: "#555", fontSize: "11px", marginLeft: "6px" }}>
+                      ({trackGenres.slice(0, 2).join(", ")}{trackGenres.length > 2 ? "…" : ""})
+                    </span>
+                  )}
+                </label>
               </div>
               <button
                 style={styles.btnPrimary}
