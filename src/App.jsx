@@ -181,6 +181,7 @@ export default function App() {
   const [selectedPlaylist, setSelectedPlaylist] = useState(null);
   const [playlistTracks, setPlaylistTracks] = useState([]);
   const [playlistLoading, setPlaylistLoading] = useState(false);
+  const [playlistError, setPlaylistError] = useState("");
 
   // Handle PKCE callback
   useEffect(() => {
@@ -225,8 +226,10 @@ export default function App() {
           next = data.next ? data.next.replace("https://api.spotify.com/v1", "") : null;
         }
         if (!cancelled) setPlaylists(all);
-      } catch (_e) {
-        // silently fail — playlist browser is optional
+      } catch (e) {
+        if (!cancelled && e.message.includes("Forbidden")) {
+          setPlaylistError("reauth");
+        }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
       }
@@ -250,7 +253,13 @@ export default function App() {
         }
         if (!cancelled) setPlaylistTracks(all);
       } catch (e) {
-        if (!cancelled) setError("Couldn't load playlist tracks: " + e.message);
+        if (!cancelled) {
+          if (e.message.includes("Forbidden") || e.message.includes("401")) {
+            setPlaylistError("reauth");
+          } else {
+            setPlaylistError(e.message);
+          }
+        }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
       }
@@ -269,6 +278,7 @@ export default function App() {
     setPlaylists([]);
     setSelectedPlaylist(null);
     setPlaylistTracks([]);
+    setPlaylistError("");
   }
 
   const searchTracks = useCallback(async () => {
@@ -571,7 +581,18 @@ export default function App() {
           <section style={styles.card}>
             <h2 style={styles.cardTitle}>Browse a Playlist</h2>
             <p style={styles.cardDesc}>Pick a playlist and tap a track to analyse it.</p>
-            {playlistLoading && playlists.length === 0 ? (
+            {playlistError === "reauth" ? (
+              <div>
+                <p style={{ fontSize: "13px", color: "#b84c4c", marginBottom: "12px" }}>
+                  Playlist access requires re-login. Log out and back in to grant permission.
+                </p>
+                <button style={styles.btnPrimary} onClick={() => { logout(); loginWithSpotify(); }}>
+                  Re-login with Spotify
+                </button>
+              </div>
+            ) : playlistError ? (
+              <p style={{ fontSize: "12px", color: "#b84c4c" }}>{playlistError}</p>
+            ) : playlistLoading && playlists.length === 0 ? (
               <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading your playlists…</span>
             ) : (
               <select
