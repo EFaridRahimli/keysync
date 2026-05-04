@@ -248,7 +248,7 @@ export default function App() {
     (async () => {
       try {
         let all = [];
-        let next = `/playlists/${selectedPlaylist.id}/tracks?limit=100`;
+        let next = `/playlists/${selectedPlaylist.id}/tracks?limit=100&additional_types=track&market=from_token`;
         while (next && all.length < 300) {
           const data = await spotifyGet(next, token);
           all = all.concat(data.items.map((i) => i.track).filter(Boolean));
