@@ -130,108 +130,21 @@ async function spotifyGet(endpoint, token) {
   return res.json();
 }
 
-// ─── Deezer lookup ───────────────────────────────────────────────────────────
-async function getDeezerData(trackName, artistName) {
+// ─── ReccoBeats lookup ───────────────────────────────────────────────────────
+async function reccoFeatures(spotifyIds) {
+  if (!spotifyIds.length) return [];
   try {
-    const res = await fetch(
-      `/api/deezer?title=${encodeURIComponent(trackName)}&artist=${encodeURIComponent(artistName)}`,
-    );
-    if (!res.ok) return null;
+    const params = new URLSearchParams();
+    spotifyIds.forEach((id) => params.append("ids", id));
+    const res = await fetch(`/api/reccobeats?action=features&${params}`);
+    if (!res.ok) return [];
     const data = await res.json();
-    const items = data.data;
-    if (!items?.length) return null;
-    const norm = (s) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const tn = norm(trackName);
-    const an = norm(artistName);
-    const match =
-      items.find((t) => norm(t.title) === tn && norm(t.artist?.name) === an) ??
-      items.find((t) => norm(t.title) === tn) ??
-      items[0];
-    return { bpm: match.bpm || 0, previewUrl: match.preview || null };
+    return data.content ?? [];
   } catch {
-    return null;
+    return [];
   }
 }
 
-// ─── Browser key detection (FFT-based chroma) ────────────────────────────────
-function fft(re, im) {
-  const n = re.length;
-  for (let i = 0, j = 0; i < n; i++) {
-    if (i < j) {
-      [re[i], re[j]] = [re[j], re[i]];
-      [im[i], im[j]] = [im[j], im[i]];
-    }
-    let k = n >> 1;
-    while (k > 0 && j >= k) { j -= k; k >>= 1; }
-    j += k;
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const ang = -2 * Math.PI / len;
-    const wRe = Math.cos(ang), wIm = Math.sin(ang);
-    for (let i = 0; i < n; i += len) {
-      let cRe = 1, cIm = 0;
-      for (let j = 0; j < len >> 1; j++) {
-        const uRe = re[i + j], uIm = im[i + j];
-        const vRe = re[i + j + (len >> 1)] * cRe - im[i + j + (len >> 1)] * cIm;
-        const vIm = re[i + j + (len >> 1)] * cIm + im[i + j + (len >> 1)] * cRe;
-        re[i + j] = uRe + vRe; im[i + j] = uIm + vIm;
-        re[i + j + (len >> 1)] = uRe - vRe; im[i + j + (len >> 1)] = uIm - vIm;
-        [cRe, cIm] = [cRe * wRe - cIm * wIm, cRe * wIm + cIm * wRe];
-      }
-    }
-  }
-}
-
-async function detectKeyFromPreview(previewUrl) {
-  const res = await fetch(previewUrl);
-  if (!res.ok) throw new Error(`Preview fetch failed (${res.status})`);
-  const buf = await res.arrayBuffer();
-  const ctx = new AudioContext();
-  const audio = await ctx.decodeAudioData(buf);
-  await ctx.close();
-
-  const srcRate = audio.sampleRate;
-  const dstRate = 11025;
-  const src = audio.getChannelData(0);
-  const len = Math.floor(src.length * dstRate / srcRate);
-  const samples = new Float32Array(len);
-  for (let i = 0; i < len; i++) samples[i] = src[Math.floor(i * srcRate / dstRate)];
-
-  const FRAME = 4096, HOP = 1024;
-  const chroma = new Float32Array(12);
-  const hann = Float32Array.from({ length: FRAME }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / FRAME));
-
-  for (let start = 0; start + FRAME <= samples.length; start += HOP) {
-    const re = new Float32Array(FRAME);
-    const im = new Float32Array(FRAME);
-    for (let i = 0; i < FRAME; i++) re[i] = samples[start + i] * hann[i];
-    fft(re, im);
-    for (let bin = 1; bin < FRAME / 2; bin++) {
-      const freq = bin * dstRate / FRAME;
-      if (freq < 65 || freq > 4200) continue;
-      const midi = Math.round(12 * Math.log2(freq / 440) + 69);
-      const pc = ((midi % 12) + 12) % 12;
-      chroma[pc] += re[bin] * re[bin] + im[bin] * im[bin];
-    }
-  }
-
-  const peak = Math.max(...chroma);
-  if (peak > 0) for (let i = 0; i < 12; i++) chroma[i] /= peak;
-
-  const maj = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
-  const min = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
-  let key = 0, mode = 1, best = -Infinity;
-  for (let r = 0; r < 12; r++) {
-    let ms = 0, ns = 0;
-    for (let i = 0; i < 12; i++) {
-      ms += chroma[(i + r) % 12] * maj[i];
-      ns += chroma[(i + r) % 12] * min[i];
-    }
-    if (ms > best) { best = ms; key = r; mode = 1; }
-    if (ns > best) { best = ns; key = r; mode = 0; }
-  }
-  return { key, mode };
-}
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -317,22 +230,14 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        const artistName = track.artists?.[0]?.name ?? "";
-        const deezer = await getDeezerData(track.name, artistName);
-        const tempo = deezer?.bpm || 0;
-        const previewUrl = deezer?.previewUrl || track.preview_url;
-        if (previewUrl) {
-          const keyData = await detectKeyFromPreview(previewUrl).catch(() => null);
-          setAudioFeatures({
-            key: keyData?.key ?? -1,
-            mode: keyData?.mode ?? 0,
-            tempo,
-          });
-        } else {
-          setAudioFeatures({ key: -1, mode: 0, tempo });
-        }
+        const [feat] = await reccoFeatures([track.id]);
+        setAudioFeatures(
+          feat
+            ? { key: feat.key, mode: feat.mode, tempo: feat.tempo }
+            : { key: -1, mode: 0, tempo: 0 },
+        );
       } catch (e) {
-        setError("Couldn't analyze track: " + e.message);
+        setError("Couldn't fetch audio features: " + e.message);
         setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
       } finally {
         setLoading(false);
@@ -346,21 +251,68 @@ export default function App() {
     setMatchLoading(true);
     setError("");
     setMatches([]);
+    const hasAudio = audioFeatures.key !== -1;
+
+    const spotifyIdFromHref = (href) =>
+      href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
+
     try {
-      let tracks = [];
       if (matchSource === "recommendations") {
-        const hasAudio = audioFeatures.key !== -1;
-        const tempo = Math.round(audioFeatures.tempo);
-        const params = hasAudio
-          ? `&target_key=${audioFeatures.key}&target_mode=${audioFeatures.mode}` +
-            `&target_tempo=${tempo}&min_tempo=${tempo - bpmTolerance}&max_tempo=${tempo + bpmTolerance}`
-          : "";
-        const data = await spotifyGet(
-          `/recommendations?seed_tracks=${selectedTrack.id}&limit=50${params}`,
-          token,
+        const params = new URLSearchParams({
+          action: "recs",
+          spotifyId: selectedTrack.id,
+          size: 50,
+        });
+        if (hasAudio) {
+          params.set("key", audioFeatures.key);
+          params.set("mode", audioFeatures.mode);
+        }
+        if (audioFeatures.tempo > 0)
+          params.set("tempo", Math.round(audioFeatures.tempo));
+
+        const recData = await fetch(`/api/reccobeats?${params}`).then((r) =>
+          r.json(),
         );
-        tracks = data.tracks;
-      } else if (matchSource === "library") {
+        const reccoTracks = (recData.content ?? []).filter(
+          (t) => spotifyIdFromHref(t.href) !== selectedTrack.id,
+        );
+        const spotifyIds = reccoTracks
+          .map((t) => spotifyIdFromHref(t.href))
+          .filter(Boolean);
+
+        const [spotifyTracks, featList] = await Promise.all([
+          spotifyIds.length
+            ? spotifyGet(`/tracks?ids=${spotifyIds.join(",")}`, token).then(
+                (d) => d.tracks,
+              )
+            : Promise.resolve([]),
+          reccoFeatures(spotifyIds),
+        ]);
+
+        const featMap = {};
+        featList.forEach((f) => {
+          const sid = spotifyIdFromHref(f.href);
+          if (sid) featMap[sid] = f;
+        });
+
+        setMatches(
+          (spotifyTracks ?? [])
+            .filter(Boolean)
+            .map((t) => {
+              const feat = featMap[t.id] ?? null;
+              const bpmDiff =
+                feat?.tempo != null
+                  ? Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10
+                  : null;
+              return { track: t, features: feat, bpmDiff, isHalfDouble: false };
+            }),
+        );
+        return;
+      }
+
+      // Library or top tracks
+      let tracks = [];
+      if (matchSource === "library") {
         let all = [];
         for (let offset = 0; offset < 200; offset += 50) {
           const data = await spotifyGet(
@@ -379,56 +331,52 @@ export default function App() {
         tracks = data.items;
       }
 
-      const hasAudio = audioFeatures.key !== -1;
+      const candidates = tracks
+        .filter((t) => t && t.id !== selectedTrack.id)
+        .slice(0, 200);
+
       if (!hasAudio) {
-        // No key/BPM data — surface all candidates without harmonic filtering.
         setMatches(
-          tracks
-            .filter((t) => t.id !== selectedTrack.id)
-            .map((track) => ({ track, features: null, bpmDiff: null, isHalfDouble: false })),
+          candidates.map((track) => ({
+            track,
+            features: null,
+            bpmDiff: null,
+            isHalfDouble: false,
+          })),
         );
         return;
       }
 
-      const candidates = tracks
-        .filter((t) => t.id !== selectedTrack.id)
-        .slice(0, 50);
-      const BATCH = 5;
-      const matched = [];
+      // Batch-fetch ReccoBeats audio features (40 Spotify IDs per call)
+      const featMap = {};
+      const BATCH = 40;
       for (let i = 0; i < candidates.length; i += BATCH) {
-        const batch = candidates.slice(i, i + BATCH);
-        const results = await Promise.allSettled(
-          batch.map(async (t) => {
-            const artistName = t.artists?.[0]?.name ?? "";
-            const deezer = await getDeezerData(t.name, artistName);
-            const bpm = deezer?.bpm || 0;
-            const previewUrl = deezer?.previewUrl || t.preview_url;
-            if (!previewUrl) return { key: -1, mode: 0, tempo: bpm };
-            const keyData = await detectKeyFromPreview(previewUrl).catch(() => null);
-            return {
-              key: keyData?.key ?? -1,
-              mode: keyData?.mode ?? 0,
-              tempo: bpm,
-            };
-          }),
-        );
-        for (let j = 0; j < batch.length; j++) {
-          if (results[j].status !== "fulfilled") continue;
-          const feat = results[j].value;
-          if (feat.key !== -1 && (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode)) continue;
-          if (feat.tempo === 0) continue;
-          const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
-          const halfDouble =
-            Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
-            Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
-          if (bpmDiff <= bpmTolerance || halfDouble) {
-            matched.push({
-              track: batch[j],
-              features: feat,
-              bpmDiff: Math.round(bpmDiff * 10) / 10,
-              isHalfDouble: bpmDiff > bpmTolerance && halfDouble,
-            });
-          }
+        const ids = candidates.slice(i, i + BATCH).map((t) => t.id);
+        const feats = await reccoFeatures(ids);
+        feats.forEach((f) => {
+          const sid = spotifyIdFromHref(f.href);
+          if (sid) featMap[sid] = f;
+        });
+      }
+
+      const matched = [];
+      for (const track of candidates) {
+        const feat = featMap[track.id];
+        if (!feat || feat.key === -1) continue;
+        if (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode)
+          continue;
+        if (!feat.tempo) continue;
+        const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
+        const halfDouble =
+          Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
+          Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
+        if (bpmDiff <= bpmTolerance || halfDouble) {
+          matched.push({
+            track,
+            features: feat,
+            bpmDiff: Math.round(bpmDiff * 10) / 10,
+            isHalfDouble: bpmDiff > bpmTolerance && halfDouble,
+          });
         }
       }
       matched.sort((a, b) => a.bpmDiff - b.bpmDiff);
@@ -526,7 +474,7 @@ export default function App() {
         {/* ── Analyzing indicator ── */}
         {selectedTrack && loading && !audioFeatures && (
           <p style={{ color: "#1db954", textAlign: "center", marginTop: 8 }}>
-            Fetching track data…
+            Fetching audio features…
           </p>
         )}
 
