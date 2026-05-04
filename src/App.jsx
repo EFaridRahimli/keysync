@@ -75,7 +75,7 @@ async function generateCodeChallenge(verifier) {
     .replace(/=/g, "");
 }
 
-async function loginWithSpotify() {
+async function loginWithSpotify(forceDialog = false) {
   const verifier = generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
   localStorage.setItem("pkce_verifier", verifier);
@@ -87,6 +87,7 @@ async function loginWithSpotify() {
     code_challenge_method: "S256",
     code_challenge: challenge,
   });
+  if (forceDialog) params.set("show_dialog", "true");
   window.location.href = `https://accounts.spotify.com/authorize?${params}`;
 }
 
@@ -586,7 +587,7 @@ export default function App() {
                 <p style={{ fontSize: "13px", color: "#b84c4c", marginBottom: "12px" }}>
                   Playlist access requires re-login. Log out and back in to grant permission.
                 </p>
-                <button style={styles.btnPrimary} onClick={() => { logout(); loginWithSpotify(); }}>
+                <button style={styles.btnPrimary} onClick={() => { logout(); loginWithSpotify(true); }}>
                   Re-login with Spotify
                 </button>
               </div>
