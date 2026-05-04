@@ -131,6 +131,17 @@ async function spotifyGet(endpoint, token) {
 }
 
 // ─── ReccoBeats lookup ───────────────────────────────────────────────────────
+function reccoToTrack(t) {
+  const spotifyId = t.href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? t.id;
+  return {
+    id: spotifyId,
+    name: t.trackTitle,
+    artists: (t.artists ?? []).map((a) => ({ name: a.name })),
+    album: { images: [] },
+    external_urls: { spotify: t.href ?? "" },
+  };
+}
+
 async function reccoFeatures(spotifyIds) {
   if (!spotifyIds.length) return [];
   try {
@@ -282,9 +293,9 @@ export default function App() {
 
         const [spotifyTracks, featList] = await Promise.all([
           spotifyIds.length
-            ? spotifyGet(`/tracks?ids=${spotifyIds.join(",")}`, token).then(
-                (d) => d.tracks,
-              )
+            ? spotifyGet(`/tracks?ids=${spotifyIds.join(",")}`, token)
+                .then((d) => d.tracks)
+                .catch(() => reccoTracks.map(reccoToTrack))
             : Promise.resolve([]),
           reccoFeatures(spotifyIds),
         ]);
@@ -576,14 +587,16 @@ export default function App() {
             <ul style={styles.matchList}>
               {matches.map(({ track, features, bpmDiff, isHalfDouble }) => (
                 <li key={track.id} style={styles.matchItem}>
-                  <img
-                    src={
-                      track.album?.images?.[2]?.url ??
-                      track.album?.images?.[0]?.url
-                    }
-                    alt=""
-                    style={styles.thumb}
-                  />
+                  {track.album?.images?.[0]?.url && (
+                    <img
+                      src={
+                        track.album?.images?.[2]?.url ??
+                        track.album?.images?.[0]?.url
+                      }
+                      alt=""
+                      style={styles.thumb}
+                    />
+                  )}
                   <div style={{ flex: 1 }}>
                     <div style={styles.trackName}>{track.name}</div>
                     <div style={styles.artistName}>
