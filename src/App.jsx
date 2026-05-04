@@ -231,7 +231,7 @@ export default function App() {
         if (!cancelled) setPlaylists(all);
       } catch (e) {
         if (!cancelled) {
-          setPlaylistError(e.status === 403 ? "reauth" : e.message);
+          setPlaylistError(`List error ${e.status ?? "?"}: ${e.message}`);
         }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
@@ -257,11 +257,7 @@ export default function App() {
         if (!cancelled) setPlaylistTracks(all);
       } catch (e) {
         if (!cancelled) {
-          setPlaylistError(
-            e.status === 403
-              ? "Can't access this playlist. If it's set to Secret in Spotify, make it public — or try revoking app access at spotify.com/account/apps and logging in again."
-              : e.message
-          );
+          setPlaylistError(`Error ${e.status ?? "?"}: ${e.message}`);
         }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
