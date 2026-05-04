@@ -130,19 +130,23 @@ async function spotifyGet(endpoint, token) {
   return res.json();
 }
 
-// ─── AudD lookup ─────────────────────────────────────────────────────────────
-async function getAudioFeaturesFromAudD(previewUrl) {
+// ─── Deezer lookup ───────────────────────────────────────────────────────────
+async function getDeezerData(trackName, artistName) {
   try {
-    const res = await fetch(`/api/audd?url=${encodeURIComponent(previewUrl)}`);
+    const q = encodeURIComponent(`track:"${trackName}" artist:"${artistName}"`);
+    const res = await fetch(`https://api.deezer.com/search?q=${q}&limit=5`);
     if (!res.ok) return null;
     const data = await res.json();
-    const result = data.result;
-    if (!result) return null;
-    const tempo =
-      result.deezer?.bpm ||
-      result.apple_music?.attributes?.tempo;
-    if (!tempo) return null;
-    return { tempo: parseFloat(tempo) };
+    const items = data.data;
+    if (!items?.length) return null;
+    const norm = (s) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const tn = norm(trackName);
+    const an = norm(artistName);
+    const match =
+      items.find((t) => norm(t.title) === tn && norm(t.artist?.name) === an) ??
+      items.find((t) => norm(t.title) === tn) ??
+      items[0];
+    return { bpm: match.bpm || 0, previewUrl: match.preview || null };
   } catch {
     return null;
   }
@@ -307,22 +311,19 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        if (track.preview_url) {
-          const [auddRes, browserRes] = await Promise.allSettled([
-            getAudioFeaturesFromAudD(track.preview_url),
-            analyzeTrackAudio(track.preview_url),
-          ]);
-          const tempo =
-            (auddRes.status === "fulfilled" && auddRes.value?.tempo) ||
-            (browserRes.status === "fulfilled" && browserRes.value?.tempo) ||
-            0;
-          const key =
-            browserRes.status === "fulfilled" ? browserRes.value.key : -1;
-          const mode =
-            browserRes.status === "fulfilled" ? browserRes.value.mode : 0;
-          setAudioFeatures({ key, mode, tempo });
+        const artistName = track.artists?.[0]?.name ?? "";
+        const deezer = await getDeezerData(track.name, artistName);
+        const tempo = deezer?.bpm || 0;
+        const previewUrl = deezer?.previewUrl || track.preview_url;
+        if (previewUrl) {
+          const browserRes = await analyzeTrackAudio(previewUrl).catch(() => null);
+          setAudioFeatures({
+            key: browserRes?.key ?? -1,
+            mode: browserRes?.mode ?? 0,
+            tempo,
+          });
         } else {
-          setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
+          setAudioFeatures({ key: -1, mode: 0, tempo });
         }
       } catch (e) {
         setError("Couldn't analyze track: " + e.message);
@@ -383,22 +384,33 @@ export default function App() {
         return;
       }
 
-      // Analyze each candidate track's audio to get key/BPM for filtering.
-      // Runs in parallel batches of 5 to avoid overwhelming the browser.
       const candidates = tracks
-        .filter((t) => t.id !== selectedTrack.id && t.preview_url)
+        .filter((t) => t.id !== selectedTrack.id)
         .slice(0, 50);
       const BATCH = 5;
       const matched = [];
       for (let i = 0; i < candidates.length; i += BATCH) {
         const batch = candidates.slice(i, i + BATCH);
         const results = await Promise.allSettled(
-          batch.map((t) => analyzeTrackAudio(t.preview_url)),
+          batch.map(async (t) => {
+            const artistName = t.artists?.[0]?.name ?? "";
+            const deezer = await getDeezerData(t.name, artistName);
+            const bpm = deezer?.bpm || 0;
+            const previewUrl = deezer?.previewUrl || t.preview_url;
+            if (!previewUrl) return { key: -1, mode: 0, tempo: bpm };
+            const browser = await analyzeTrackAudio(previewUrl).catch(() => null);
+            return {
+              key: browser?.key ?? -1,
+              mode: browser?.mode ?? 0,
+              tempo: bpm || browser?.tempo || 0,
+            };
+          }),
         );
         for (let j = 0; j < batch.length; j++) {
           if (results[j].status !== "fulfilled") continue;
           const feat = results[j].value;
-          if (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode) continue;
+          if (feat.key !== -1 && (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode)) continue;
+          if (feat.tempo === 0) continue;
           const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
           const halfDouble =
             Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
