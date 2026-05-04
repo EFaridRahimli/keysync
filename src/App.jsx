@@ -593,29 +593,34 @@ export default function App() {
                   Re-login with Spotify
                 </button>
               </div>
-            ) : playlistError ? (
-              <p style={{ fontSize: "12px", color: "#b84c4c" }}>{playlistError}</p>
-            ) : playlistLoading && playlists.length === 0 ? (
-              <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading your playlists…</span>
             ) : (
-              <select
-                style={{ ...styles.input, width: "100%", marginBottom: "12px" }}
-                value={selectedPlaylist?.id ?? ""}
-                onChange={(e) => {
-                  setPlaylistError("");
-                  setSelectedPlaylist(playlists.find((p) => p.id === e.target.value) ?? null);
-                }}
-              >
-                <option value="">Choose a playlist…</option>
-                {playlists.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.tracks?.total ?? "?"} tracks)
-                  </option>
-                ))}
-              </select>
-            )}
-            {selectedPlaylist && playlistLoading && (
-              <p style={{ fontSize: "12px", color: "#b0a898", margin: 0 }}>Loading tracks…</p>
+              <>
+                {playlistLoading && playlists.length === 0 ? (
+                  <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading your playlists…</span>
+                ) : (
+                  <select
+                    style={{ ...styles.input, width: "100%", marginBottom: "12px" }}
+                    value={selectedPlaylist?.id ?? ""}
+                    onChange={(e) => {
+                      setPlaylistError("");
+                      setSelectedPlaylist(playlists.find((p) => p.id === e.target.value) ?? null);
+                    }}
+                  >
+                    <option value="">Choose a playlist…</option>
+                    {playlists.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.tracks?.total ?? "?"} tracks)
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {playlistError && (
+                  <p style={{ fontSize: "12px", color: "#b84c4c", margin: "0 0 8px" }}>{playlistError}</p>
+                )}
+                {selectedPlaylist && playlistLoading && (
+                  <p style={{ fontSize: "12px", color: "#b0a898", margin: 0 }}>Loading tracks…</p>
+                )}
+              </>
             )}
             {selectedPlaylist && !playlistLoading && playlistTracks.length > 0 && (
               <ul style={{ ...styles.resultList, maxHeight: "320px", overflowY: "auto" }}>
