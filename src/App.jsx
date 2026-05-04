@@ -422,6 +422,7 @@ export default function App() {
           token,
         );
         tracks = data.items;
+      }
 
       const candidates = tracks
         .filter((t) => t && t.id !== selectedTrack.id)
