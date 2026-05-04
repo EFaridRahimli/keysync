@@ -259,7 +259,7 @@ export default function App() {
         if (!cancelled) {
           setPlaylistError(
             e.status === 403
-              ? "This playlist can't be accessed. Try a different one."
+              ? "Can't access this playlist. If it's set to Secret in Spotify, make it public — or try revoking app access at spotify.com/account/apps and logging in again."
               : e.message
           );
         }
@@ -586,11 +586,14 @@ export default function App() {
             <p style={styles.cardDesc}>Pick a playlist and tap a track to analyse it.</p>
             {playlistError === "reauth" ? (
               <div>
-                <p style={{ fontSize: "13px", color: "#b84c4c", marginBottom: "12px" }}>
-                  Playlist access requires re-login. Log out and back in to grant permission.
+                <p style={{ fontSize: "13px", color: "#b84c4c", marginBottom: "8px" }}>
+                  Playlist access was not granted.
+                </p>
+                <p style={{ fontSize: "12px", color: "#6e6760", marginBottom: "12px", lineHeight: "1.6" }}>
+                  To fix this: go to <strong>spotify.com/account/apps</strong>, find this app and click <strong>Remove Access</strong>, then log in below. This forces Spotify to ask for playlist permission fresh.
                 </p>
                 <button style={styles.btnPrimary} onClick={() => { logout(); loginWithSpotify(true); }}>
-                  Re-login with Spotify
+                  Log in fresh
                 </button>
               </div>
             ) : (
