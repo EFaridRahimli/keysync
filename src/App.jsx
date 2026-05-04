@@ -546,8 +546,8 @@ export default function App() {
                   <span
                     style={{
                       ...styles.badge,
-                      background: "#1a3a2a",
-                      color: "#1db954",
+                      background: "#daeee3",
+                      color: "#1a7a42",
                     }}
                   >
                     🎡 {getCamelot(audioFeatures.key, audioFeatures.mode)}
@@ -602,7 +602,7 @@ export default function App() {
                   />
                   Same genre only
                   {trackGenres.length > 0 && (
-                    <span style={{ color: "#555", fontSize: "11px", marginLeft: "6px" }}>
+                    <span style={{ color: "#9e9890", fontSize: "11px", marginLeft: "6px" }}>
                       ({trackGenres.slice(0, 2).join(", ")}{trackGenres.length > 2 ? "…" : ""})
                     </span>
                   )}
@@ -684,7 +684,7 @@ export default function App() {
           !matchLoading &&
           audioFeatures &&
           selectedTrack && (
-            <p style={{ color: "#666", textAlign: "center", marginTop: 8 }}>
+            <p style={{ color: "#9e9890", textAlign: "center", marginTop: 8 }}>
               No matches yet — hit "Find Harmonic Matches" above.
             </p>
           )}
@@ -701,8 +701,8 @@ export default function App() {
 const styles = {
   root: {
     minHeight: "100vh",
-    background: "#ffffff",
-    color: "#111111",
+    background: "#f7f4ef",
+    color: "#2c2c2c",
     fontFamily: "system-ui, -apple-system, 'Helvetica Neue', sans-serif",
     fontWeight: 300,
     overflowX: "hidden",
@@ -712,7 +712,7 @@ const styles = {
   header: {
     textAlign: "center",
     padding: "56px 20px 28px",
-    borderBottom: "1px solid #f0f0f0",
+    borderBottom: "1px solid #e8e4dd",
   },
   logo: {
     display: "flex",
@@ -726,10 +726,10 @@ const styles = {
     fontSize: "28px",
     fontWeight: 300,
     letterSpacing: "0.05em",
-    color: "#111",
+    color: "#2c2c2c",
   },
   tagline: {
-    color: "#bbb",
+    color: "#b0a898",
     fontSize: "11px",
     letterSpacing: "0.15em",
     textTransform: "uppercase",
@@ -739,8 +739,8 @@ const styles = {
   logoutBtn: {
     marginTop: "14px",
     background: "transparent",
-    border: "1px solid #e0e0e0",
-    color: "#aaa",
+    border: "1px solid #d8d3cb",
+    color: "#9e9890",
     borderRadius: "4px",
     padding: "4px 14px",
     fontSize: "11px",
@@ -758,8 +758,8 @@ const styles = {
     gap: "12px",
   },
   card: {
-    background: "#ffffff",
-    border: "1px solid #efefef",
+    background: "#f2efe9",
+    border: "1px solid #e8e4dd",
     borderRadius: "8px",
     padding: "24px",
   },
@@ -767,32 +767,32 @@ const styles = {
     margin: "0 0 6px",
     fontSize: "13px",
     fontWeight: 400,
-    color: "#111",
+    color: "#2c2c2c",
     letterSpacing: "0.05em",
   },
   cardDesc: {
     margin: "0 0 20px",
     fontSize: "13px",
-    color: "#bbb",
+    color: "#b0a898",
     lineHeight: "1.6",
     fontWeight: 300,
   },
   inputRow: { display: "flex", gap: "8px" },
   input: {
     flex: 1,
-    background: "#fafafa",
-    border: "1px solid #e8e8e8",
+    background: "#ece8e1",
+    border: "1px solid #dedad2",
     borderRadius: "4px",
     padding: "9px 13px",
-    color: "#111",
+    color: "#2c2c2c",
     fontSize: "13px",
     outline: "none",
     fontFamily: "inherit",
     fontWeight: 300,
   },
   btnPrimary: {
-    background: "#111",
-    color: "#fff",
+    background: "#3a3a3a",
+    color: "#f7f4ef",
     border: "none",
     borderRadius: "4px",
     padding: "9px 20px",
@@ -804,11 +804,11 @@ const styles = {
     fontFamily: "inherit",
   },
   error: {
-    color: "#e05555",
+    color: "#b84c4c",
     fontSize: "12px",
     marginTop: "10px",
-    background: "#fff5f5",
-    border: "1px solid #fde8e8",
+    background: "#f5eeee",
+    border: "1px solid #e8d8d8",
     padding: "8px 12px",
     borderRadius: "4px",
     marginBottom: "12px",
@@ -837,10 +837,10 @@ const styles = {
     borderRadius: "3px",
     objectFit: "cover",
     flexShrink: 0,
-    background: "#f0f0f0",
+    background: "#e4e0d8",
   },
-  trackName: { fontSize: "13px", color: "#111", fontWeight: 400 },
-  artistName: { fontSize: "12px", color: "#bbb", marginTop: "2px", fontWeight: 300 },
+  trackName: { fontSize: "13px", color: "#2c2c2c", fontWeight: 400 },
+  artistName: { fontSize: "12px", color: "#b0a898", marginTop: "2px", fontWeight: 300 },
   selectedTrackRow: {
     display: "flex",
     gap: "16px",
@@ -853,23 +853,23 @@ const styles = {
     borderRadius: "4px",
     objectFit: "cover",
     flexShrink: 0,
-    background: "#f0f0f0",
+    background: "#e4e0d8",
   },
   selectedTrackName: {
     fontSize: "16px",
     fontWeight: 400,
-    color: "#111",
+    color: "#2c2c2c",
     marginBottom: "3px",
   },
-  selectedArtist: { fontSize: "12px", color: "#bbb", marginBottom: "10px", fontWeight: 300 },
+  selectedArtist: { fontSize: "12px", color: "#b0a898", marginBottom: "10px", fontWeight: 300 },
   badgeRow: { display: "flex", gap: "6px", flexWrap: "wrap" },
   badge: {
-    background: "#f5f5f5",
-    border: "1px solid #ebebeb",
+    background: "#ece8e1",
+    border: "1px solid #dedad2",
     borderRadius: "3px",
     padding: "3px 10px",
     fontSize: "11px",
-    color: "#555",
+    color: "#6e6760",
     fontWeight: 300,
     letterSpacing: "0.03em",
   },
@@ -877,13 +877,13 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     gap: "16px",
-    borderTop: "1px solid #f0f0f0",
+    borderTop: "1px solid #e8e4dd",
     paddingTop: "20px",
   },
   controlGroup: { display: "flex", flexDirection: "column", gap: "8px" },
   label: {
     fontSize: "10px",
-    color: "#bbb",
+    color: "#b0a898",
     letterSpacing: "0.12em",
     textTransform: "uppercase",
     fontWeight: 400,
@@ -895,7 +895,7 @@ const styles = {
     alignItems: "center",
     gap: "6px",
     fontSize: "13px",
-    color: "#555",
+    color: "#6e6760",
     cursor: "pointer",
     fontWeight: 300,
   },
@@ -913,8 +913,8 @@ const styles = {
     gap: "12px",
     padding: "9px 10px",
     borderRadius: "4px",
-    background: "#fafafa",
-    border: "1px solid #f0f0f0",
+    background: "#ece8e1",
+    border: "1px solid #e2ddd5",
   },
   matchMeta: {
     display: "flex",
@@ -924,8 +924,8 @@ const styles = {
     flexShrink: 0,
   },
   matchBadge: {
-    background: "#f0f0f0",
-    color: "#555",
+    background: "#e4e0d8",
+    color: "#6e6760",
     borderRadius: "3px",
     padding: "2px 7px",
     fontSize: "11px",
@@ -949,7 +949,7 @@ const styles = {
     textAlign: "center",
     padding: "24px",
     fontSize: "11px",
-    color: "#ddd",
+    color: "#c4bfb6",
     fontWeight: 300,
     letterSpacing: "0.05em",
   },
