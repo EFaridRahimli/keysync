@@ -130,41 +130,19 @@ async function spotifyGet(endpoint, token) {
   return res.json();
 }
 
-// ─── GetSongBPM lookup ────────────────────────────────────────────────────────
-const OPEN_KEY_MAP = {
-  "1d": [0, 1],  "1m": [9, 0],
-  "2d": [7, 1],  "2m": [4, 0],
-  "3d": [2, 1],  "3m": [11, 0],
-  "4d": [9, 1],  "4m": [6, 0],
-  "5d": [4, 1],  "5m": [1, 0],
-  "6d": [11, 1], "6m": [8, 0],
-  "7d": [6, 1],  "7m": [3, 0],
-  "8d": [1, 1],  "8m": [10, 0],
-  "9d": [8, 1],  "9m": [5, 0],
-  "10d": [3, 1], "10m": [0, 0],
-  "11d": [10, 1],"11m": [7, 0],
-  "12d": [5, 1], "12m": [2, 0],
-};
-
-async function getAudioFeaturesFromSongBPM(trackName, artistName) {
+// ─── AudD lookup ─────────────────────────────────────────────────────────────
+async function getAudioFeaturesFromAudD(previewUrl) {
   try {
-    const res = await fetch(
-      `/api/songbpm?title=${encodeURIComponent(trackName)}&artist=${encodeURIComponent(artistName)}`,
-    );
+    const res = await fetch(`/api/audd?url=${encodeURIComponent(previewUrl)}`);
     if (!res.ok) return null;
     const data = await res.json();
-    const results = data.search;
-    if (!results?.length) return null;
-
-    const norm = (s) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const artistNorm = norm(artistName);
-    const match =
-      results.find((r) => norm(r.artist?.name) === artistNorm) ?? results[0];
-
-    if (!match?.tempo || !match?.open_key) return null;
-    const kv = OPEN_KEY_MAP[match.open_key];
-    if (!kv) return null;
-    return { key: kv[0], mode: kv[1], tempo: parseFloat(match.tempo) };
+    const result = data.result;
+    if (!result) return null;
+    const tempo =
+      result.deezer?.bpm ||
+      result.apple_music?.attributes?.tempo;
+    if (!tempo) return null;
+    return { tempo: parseFloat(tempo) };
   } catch {
     return null;
   }
@@ -329,12 +307,23 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        const artistName = track.artists?.[0]?.name ?? "";
-        let features = await getAudioFeaturesFromSongBPM(track.name, artistName);
-        if (!features && track.preview_url) {
-          features = await analyzeTrackAudio(track.preview_url);
+        if (track.preview_url) {
+          const [auddRes, browserRes] = await Promise.allSettled([
+            getAudioFeaturesFromAudD(track.preview_url),
+            analyzeTrackAudio(track.preview_url),
+          ]);
+          const tempo =
+            (auddRes.status === "fulfilled" && auddRes.value?.tempo) ||
+            (browserRes.status === "fulfilled" && browserRes.value?.tempo) ||
+            0;
+          const key =
+            browserRes.status === "fulfilled" ? browserRes.value.key : -1;
+          const mode =
+            browserRes.status === "fulfilled" ? browserRes.value.mode : 0;
+          setAudioFeatures({ key, mode, tempo });
+        } else {
+          setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
         }
-        setAudioFeatures(features ?? { key: -1, mode: 0, tempo: 0 });
       } catch (e) {
         setError("Couldn't analyze track: " + e.message);
         setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
@@ -519,7 +508,7 @@ export default function App() {
         {/* ── Analyzing indicator ── */}
         {selectedTrack && loading && !audioFeatures && (
           <p style={{ color: "#1db954", textAlign: "center", marginTop: 8 }}>
-            Analyzing audio preview…
+            Fetching track data…
           </p>
         )}
 
@@ -676,15 +665,7 @@ export default function App() {
       </main>
 
       <footer style={styles.footer}>
-        BPM &amp; key data powered by{" "}
-        <a
-          href="https://getsongbpm.com"
-          target="_blank"
-          rel="noreferrer"
-          style={styles.footerLink}
-        >
-          GetSongBPM
-        </a>
+        KeySync — harmonic mixing helper
       </footer>
     </div>
   );
