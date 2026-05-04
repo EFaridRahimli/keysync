@@ -212,7 +212,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (matchSource !== "playlist" || !token || playlists.length > 0) return;
+    if (!token || playlists.length > 0) return;
     let cancelled = false;
     setPlaylistLoading(true);
     (async () => {
@@ -225,14 +225,14 @@ export default function App() {
           next = data.next ? data.next.replace("https://api.spotify.com/v1", "") : null;
         }
         if (!cancelled) setPlaylists(all);
-      } catch (e) {
-        if (!cancelled) setError("Couldn't load playlists: " + e.message);
+      } catch {
+        // silently fail — playlist browser is optional
       } finally {
         if (!cancelled) setPlaylistLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [matchSource, token, playlists.length]);
+  }, [token, playlists.length]);
 
   useEffect(() => {
     if (!selectedPlaylist || !token) return;
@@ -422,9 +422,6 @@ export default function App() {
           token,
         );
         tracks = data.items;
-      } else if (matchSource === "playlist") {
-        tracks = playlistTracks;
-      }
 
       const candidates = tracks
         .filter((t) => t && t.id !== selectedTrack.id)
@@ -484,7 +481,7 @@ export default function App() {
     } finally {
       setMatchLoading(false);
     }
-  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres, playlistTracks]);
+  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres]);
 
   return (
     <div style={styles.root}>
@@ -568,6 +565,52 @@ export default function App() {
           </section>
         )}
 
+        {/* ── Playlist Browser ── */}
+        {token && (
+          <section style={styles.card}>
+            <h2 style={styles.cardTitle}>Browse a Playlist</h2>
+            <p style={styles.cardDesc}>Pick a playlist and tap a track to analyse it.</p>
+            {playlistLoading && playlists.length === 0 ? (
+              <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading your playlists…</span>
+            ) : (
+              <select
+                style={{ ...styles.input, width: "100%", marginBottom: "12px" }}
+                value={selectedPlaylist?.id ?? ""}
+                onChange={(e) => {
+                  setSelectedPlaylist(playlists.find((p) => p.id === e.target.value) ?? null);
+                }}
+              >
+                <option value="">Choose a playlist…</option>
+                {playlists.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.tracks?.total ?? "?"} tracks)
+                  </option>
+                ))}
+              </select>
+            )}
+            {selectedPlaylist && playlistLoading && (
+              <p style={{ fontSize: "12px", color: "#b0a898", margin: 0 }}>Loading tracks…</p>
+            )}
+            {selectedPlaylist && !playlistLoading && playlistTracks.length > 0 && (
+              <ul style={{ ...styles.resultList, maxHeight: "320px", overflowY: "auto" }}>
+                {playlistTracks.map((t) => (
+                  <li key={t.id} style={styles.resultItem} onClick={() => selectTrack(t)}>
+                    {t.album?.images?.[2]?.url && (
+                      <img src={t.album.images[2].url} alt="" style={styles.thumb} />
+                    )}
+                    <div>
+                      <div style={styles.trackName}>{t.name}</div>
+                      <div style={styles.artistName}>
+                        {t.artists?.map((a) => a.name).join(", ")}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
         {/* ── Analyzing indicator ── */}
         {selectedTrack && loading && !audioFeatures && (
           <p style={{ color: "#1db954", textAlign: "center", marginTop: 8 }}>
@@ -632,7 +675,6 @@ export default function App() {
                     { val: "recommendations", label: "Recommendations" },
                     { val: "library", label: "Your Library" },
                     { val: "top", label: "Your Top Tracks" },
-                    { val: "playlist", label: "A Playlist" },
                   ].map(({ val, label }) => (
                     <label key={val} style={styles.radioLabel}>
                       <input
@@ -648,37 +690,6 @@ export default function App() {
                   ))}
                 </div>
               </div>
-              {matchSource === "playlist" && (
-                <div style={styles.controlGroup}>
-                  <label style={styles.label}>Select Playlist</label>
-                  {playlistLoading && playlists.length === 0 ? (
-                    <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading playlists…</span>
-                  ) : (
-                    <select
-                      style={{ ...styles.input, cursor: "pointer" }}
-                      value={selectedPlaylist?.id ?? ""}
-                      onChange={(e) => {
-                        setSelectedPlaylist(playlists.find((p) => p.id === e.target.value) ?? null);
-                      }}
-                    >
-                      <option value="">Choose a playlist…</option>
-                      {playlists.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.tracks?.total ?? "?"} tracks)
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {selectedPlaylist && playlistLoading && (
-                    <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading tracks…</span>
-                  )}
-                  {selectedPlaylist && !playlistLoading && playlistTracks.length > 0 && (
-                    <span style={{ fontSize: "12px", color: "#b0a898" }}>
-                      {playlistTracks.length} tracks ready
-                    </span>
-                  )}
-                </div>
-              )}
               <div style={styles.controlGroup}>
                 <label style={styles.label}>Filters</label>
                 <label style={styles.radioLabel}>
