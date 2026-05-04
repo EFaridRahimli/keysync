@@ -154,7 +154,7 @@ async function reccoFeatures(spotifyIds) {
     if (!res.ok) return [];
     const data = await res.json();
     return data.content ?? [];
-  } catch {
+  } catch (_e) {
     return [];
   }
 }
@@ -225,7 +225,7 @@ export default function App() {
           next = data.next ? data.next.replace("https://api.spotify.com/v1", "") : null;
         }
         if (!cancelled) setPlaylists(all);
-      } catch {
+      } catch (_e) {
         // silently fail — playlist browser is optional
       } finally {
         if (!cancelled) setPlaylistLoading(false);
