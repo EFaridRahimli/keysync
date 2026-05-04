@@ -126,7 +126,9 @@ async function spotifyGet(endpoint, token) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message ?? `HTTP ${res.status}`);
+    const e = new Error(err?.error?.message ?? `HTTP ${res.status}`);
+    e.status = res.status;
+    throw e;
   }
   return res.json();
 }
@@ -228,8 +230,8 @@ export default function App() {
         }
         if (!cancelled) setPlaylists(all);
       } catch (e) {
-        if (!cancelled && e.message.includes("Forbidden")) {
-          setPlaylistError("reauth");
+        if (!cancelled) {
+          setPlaylistError(e.status === 403 ? "reauth" : e.message);
         }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
@@ -255,11 +257,11 @@ export default function App() {
         if (!cancelled) setPlaylistTracks(all);
       } catch (e) {
         if (!cancelled) {
-          if (e.message.includes("Forbidden") || e.message.includes("401")) {
-            setPlaylistError("reauth");
-          } else {
-            setPlaylistError(e.message);
-          }
+          setPlaylistError(
+            e.status === 403
+              ? "This playlist can't be accessed. Try a different one."
+              : e.message
+          );
         }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
@@ -600,6 +602,7 @@ export default function App() {
                 style={{ ...styles.input, width: "100%", marginBottom: "12px" }}
                 value={selectedPlaylist?.id ?? ""}
                 onChange={(e) => {
+                  setPlaylistError("");
                   setSelectedPlaylist(playlists.find((p) => p.id === e.target.value) ?? null);
                 }}
               >
