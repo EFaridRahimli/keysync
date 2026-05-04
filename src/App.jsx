@@ -133,8 +133,9 @@ async function spotifyGet(endpoint, token) {
 // ─── Deezer lookup ───────────────────────────────────────────────────────────
 async function getDeezerData(trackName, artistName) {
   try {
-    const q = encodeURIComponent(`track:"${trackName}" artist:"${artistName}"`);
-    const res = await fetch(`https://api.deezer.com/search?q=${q}&limit=5`);
+    const res = await fetch(
+      `/api/deezer?title=${encodeURIComponent(trackName)}&artist=${encodeURIComponent(artistName)}`,
+    );
     if (!res.ok) return null;
     const data = await res.json();
     const items = data.data;
