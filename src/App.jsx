@@ -674,6 +674,18 @@ export default function App() {
             </p>
           )}
       </main>
+
+      <footer style={styles.footer}>
+        BPM &amp; key data powered by{" "}
+        <a
+          href="https://getsongbpm.com"
+          target="_blank"
+          rel="noreferrer"
+          style={styles.footerLink}
+        >
+          GetSongBPM
+        </a>
+      </footer>
     </div>
   );
 }
@@ -939,5 +951,17 @@ const styles = {
     fontSize: "11px",
     flexShrink: 0,
     fontWeight: "bold",
+  },
+  footer: {
+    textAlign: "center",
+    padding: "20px",
+    fontSize: "12px",
+    color: "#444",
+    position: "relative",
+    zIndex: 1,
+  },
+  footerLink: {
+    color: "#1db954",
+    textDecoration: "none",
   },
 };
