@@ -130,7 +130,47 @@ async function spotifyGet(endpoint, token) {
   return res.json();
 }
 
-// ─── Browser audio analysis (replaces Spotify audio-features API) ────────────
+// ─── GetSongBPM lookup ────────────────────────────────────────────────────────
+const OPEN_KEY_MAP = {
+  "1d": [0, 1],  "1m": [9, 0],
+  "2d": [7, 1],  "2m": [4, 0],
+  "3d": [2, 1],  "3m": [11, 0],
+  "4d": [9, 1],  "4m": [6, 0],
+  "5d": [4, 1],  "5m": [1, 0],
+  "6d": [11, 1], "6m": [8, 0],
+  "7d": [6, 1],  "7m": [3, 0],
+  "8d": [1, 1],  "8m": [10, 0],
+  "9d": [8, 1],  "9m": [5, 0],
+  "10d": [3, 1], "10m": [0, 0],
+  "11d": [10, 1],"11m": [7, 0],
+  "12d": [5, 1], "12m": [2, 0],
+};
+
+async function getAudioFeaturesFromSongBPM(trackName, artistName) {
+  try {
+    const res = await fetch(
+      `/api/songbpm?title=${encodeURIComponent(trackName)}&artist=${encodeURIComponent(artistName)}`,
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const results = data.search;
+    if (!results?.length) return null;
+
+    const norm = (s) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const artistNorm = norm(artistName);
+    const match =
+      results.find((r) => norm(r.artist?.name) === artistNorm) ?? results[0];
+
+    if (!match?.tempo || !match?.open_key) return null;
+    const kv = OPEN_KEY_MAP[match.open_key];
+    if (!kv) return null;
+    return { key: kv[0], mode: kv[1], tempo: parseFloat(match.tempo) };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Browser audio analysis (fallback) ───────────────────────────────────────
 function goertzel(samples, freq, sampleRate) {
   const k = Math.round(samples.length * freq / sampleRate);
   const coeff = 2 * Math.cos(2 * Math.PI * k / samples.length);
@@ -289,12 +329,12 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        if (track.preview_url) {
-          const features = await analyzeTrackAudio(track.preview_url);
-          setAudioFeatures(features);
-        } else {
-          setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
+        const artistName = track.artists?.[0]?.name ?? "";
+        let features = await getAudioFeaturesFromSongBPM(track.name, artistName);
+        if (!features && track.preview_url) {
+          features = await analyzeTrackAudio(track.preview_url);
         }
+        setAudioFeatures(features ?? { key: -1, mode: 0, tempo: 0 });
       } catch (e) {
         setError("Couldn't analyze track: " + e.message);
         setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
