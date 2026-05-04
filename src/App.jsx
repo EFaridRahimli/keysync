@@ -153,27 +153,71 @@ async function getDeezerData(trackName, artistName) {
   }
 }
 
-// ─── Browser audio analysis (fallback) ───────────────────────────────────────
-function goertzel(samples, freq, sampleRate) {
-  const k = Math.round(samples.length * freq / sampleRate);
-  const coeff = 2 * Math.cos(2 * Math.PI * k / samples.length);
-  let s1 = 0, s2 = 0;
-  for (let i = 0; i < samples.length; i++) {
-    const s = samples[i] + coeff * s1 - s2;
-    s2 = s1; s1 = s;
+// ─── Browser key detection (FFT-based chroma) ────────────────────────────────
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 0, j = 0; i < n; i++) {
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+    let k = n >> 1;
+    while (k > 0 && j >= k) { j -= k; k >>= 1; }
+    j += k;
   }
-  return Math.sqrt(s1 * s1 + s2 * s2 - coeff * s1 * s2);
-}
-
-function detectKey(samples, sampleRate) {
-  const chroma = new Float32Array(12);
-  for (let c = 0; c < 12; c++) {
-    for (let oct = 3; oct <= 6; oct++) {
-      chroma[c] += goertzel(samples, 440 * Math.pow(2, (c + (oct + 1) * 12 - 69) / 12), sampleRate);
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wRe = Math.cos(ang), wIm = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cRe = 1, cIm = 0;
+      for (let j = 0; j < len >> 1; j++) {
+        const uRe = re[i + j], uIm = im[i + j];
+        const vRe = re[i + j + (len >> 1)] * cRe - im[i + j + (len >> 1)] * cIm;
+        const vIm = re[i + j + (len >> 1)] * cIm + im[i + j + (len >> 1)] * cRe;
+        re[i + j] = uRe + vRe; im[i + j] = uIm + vIm;
+        re[i + j + (len >> 1)] = uRe - vRe; im[i + j + (len >> 1)] = uIm - vIm;
+        [cRe, cIm] = [cRe * wRe - cIm * wIm, cRe * wIm + cIm * wRe];
+      }
     }
   }
+}
+
+async function detectKeyFromPreview(previewUrl) {
+  const res = await fetch(previewUrl);
+  if (!res.ok) throw new Error(`Preview fetch failed (${res.status})`);
+  const buf = await res.arrayBuffer();
+  const ctx = new AudioContext();
+  const audio = await ctx.decodeAudioData(buf);
+  await ctx.close();
+
+  const srcRate = audio.sampleRate;
+  const dstRate = 11025;
+  const src = audio.getChannelData(0);
+  const len = Math.floor(src.length * dstRate / srcRate);
+  const samples = new Float32Array(len);
+  for (let i = 0; i < len; i++) samples[i] = src[Math.floor(i * srcRate / dstRate)];
+
+  const FRAME = 4096, HOP = 1024;
+  const chroma = new Float32Array(12);
+  const hann = Float32Array.from({ length: FRAME }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / FRAME));
+
+  for (let start = 0; start + FRAME <= samples.length; start += HOP) {
+    const re = new Float32Array(FRAME);
+    const im = new Float32Array(FRAME);
+    for (let i = 0; i < FRAME; i++) re[i] = samples[start + i] * hann[i];
+    fft(re, im);
+    for (let bin = 1; bin < FRAME / 2; bin++) {
+      const freq = bin * dstRate / FRAME;
+      if (freq < 65 || freq > 4200) continue;
+      const midi = Math.round(12 * Math.log2(freq / 440) + 69);
+      const pc = ((midi % 12) + 12) % 12;
+      chroma[pc] += re[bin] * re[bin] + im[bin] * im[bin];
+    }
+  }
+
   const peak = Math.max(...chroma);
   if (peak > 0) for (let i = 0; i < 12; i++) chroma[i] /= peak;
+
   const maj = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
   const min = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
   let key = 0, mode = 1, best = -Infinity;
@@ -187,45 +231,6 @@ function detectKey(samples, sampleRate) {
     if (ns > best) { best = ns; key = r; mode = 0; }
   }
   return { key, mode };
-}
-
-function detectBPM(samples, sampleRate) {
-  const frameSize = Math.round(sampleRate * 0.01);
-  const n = Math.floor(samples.length / frameSize);
-  const energy = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    let s = 0;
-    for (let j = 0; j < frameSize; j++) s += samples[i * frameSize + j] ** 2;
-    energy[i] = s;
-  }
-  const onset = new Float32Array(n);
-  for (let i = 1; i < n; i++) onset[i] = Math.max(0, energy[i] - energy[i - 1]);
-  const fps = sampleRate / frameSize;
-  const minL = Math.floor(fps * 60 / 200);
-  const maxL = Math.ceil(fps * 60 / 60);
-  let best = -Infinity, bestBPM = 120;
-  for (let lag = minL; lag <= maxL; lag++) {
-    let score = 0;
-    for (let i = 0; i < n - lag; i++) score += onset[i] * onset[i + lag];
-    if (score > best) { best = score; bestBPM = (fps * 60) / lag; }
-  }
-  return Math.round(bestBPM);
-}
-
-async function analyzeTrackAudio(previewUrl) {
-  const res = await fetch(previewUrl);
-  if (!res.ok) throw new Error(`Preview fetch failed (${res.status})`);
-  const buf = await res.arrayBuffer();
-  const ctx = new AudioContext();
-  const audio = await ctx.decodeAudioData(buf);
-  await ctx.close();
-  const srcRate = audio.sampleRate;
-  const dstRate = 11025;
-  const src = audio.getChannelData(0);
-  const len = Math.floor(src.length * dstRate / srcRate);
-  const samples = new Float32Array(len);
-  for (let i = 0; i < len; i++) samples[i] = src[Math.floor(i * srcRate / dstRate)];
-  return { ...detectKey(samples, dstRate), tempo: detectBPM(samples, dstRate) };
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
@@ -317,10 +322,10 @@ export default function App() {
         const tempo = deezer?.bpm || 0;
         const previewUrl = deezer?.previewUrl || track.preview_url;
         if (previewUrl) {
-          const browserRes = await analyzeTrackAudio(previewUrl).catch(() => null);
+          const keyData = await detectKeyFromPreview(previewUrl).catch(() => null);
           setAudioFeatures({
-            key: browserRes?.key ?? -1,
-            mode: browserRes?.mode ?? 0,
+            key: keyData?.key ?? -1,
+            mode: keyData?.mode ?? 0,
             tempo,
           });
         } else {
@@ -399,11 +404,11 @@ export default function App() {
             const bpm = deezer?.bpm || 0;
             const previewUrl = deezer?.previewUrl || t.preview_url;
             if (!previewUrl) return { key: -1, mode: 0, tempo: bpm };
-            const browser = await analyzeTrackAudio(previewUrl).catch(() => null);
+            const keyData = await detectKeyFromPreview(previewUrl).catch(() => null);
             return {
-              key: browser?.key ?? -1,
-              mode: browser?.mode ?? 0,
-              tempo: bpm || browser?.tempo || 0,
+              key: keyData?.key ?? -1,
+              mode: keyData?.mode ?? 0,
+              tempo: bpm,
             };
           }),
         );
