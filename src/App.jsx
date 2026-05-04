@@ -141,7 +141,7 @@ function reccoToTrack(t) {
       id: a.href?.match(/artist\/([A-Za-z0-9]+)/)?.[1] ?? null,
     })),
     album: { images: [] },
-    external_urls: { spotify: t.href ?? "" },
+    external_urls: { spotify: spotifyId ? `https://open.spotify.com/track/${spotifyId}` : "" },
   };
 }
 
