@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 
 const CLIENT_ID = "ca3f485852fc46b891cbd34d7d700f4c";
 const REDIRECT_URI = window.location.origin;
-const SCOPES = "user-library-read user-top-read user-read-recently-played";
+const SCOPES = "user-library-read user-top-read user-read-recently-played playlist-read-private playlist-read-collaborative";
 
 // ─── Spotify key map ──────────────────────────────────────────────────────────
 const KEY_NAMES = [
@@ -177,6 +177,10 @@ export default function App() {
   const [matchSource, setMatchSource] = useState("recommendations");
   const [trackGenres, setTrackGenres] = useState([]);
   const [filterByGenre, setFilterByGenre] = useState(false);
+  const [playlists, setPlaylists] = useState([]);
+  const [selectedPlaylist, setSelectedPlaylist] = useState(null);
+  const [playlistTracks, setPlaylistTracks] = useState([]);
+  const [playlistLoading, setPlaylistLoading] = useState(false);
 
   // Handle PKCE callback
   useEffect(() => {
@@ -207,6 +211,53 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (matchSource !== "playlist" || !token || playlists.length > 0) return;
+    let cancelled = false;
+    setPlaylistLoading(true);
+    (async () => {
+      try {
+        let all = [];
+        let next = `/me/playlists?limit=50`;
+        while (next && all.length < 200) {
+          const data = await spotifyGet(next, token);
+          all = all.concat(data.items.filter(Boolean));
+          next = data.next ? data.next.replace("https://api.spotify.com/v1", "") : null;
+        }
+        if (!cancelled) setPlaylists(all);
+      } catch (e) {
+        if (!cancelled) setError("Couldn't load playlists: " + e.message);
+      } finally {
+        if (!cancelled) setPlaylistLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [matchSource, token, playlists.length]);
+
+  useEffect(() => {
+    if (!selectedPlaylist || !token) return;
+    let cancelled = false;
+    setPlaylistLoading(true);
+    setPlaylistTracks([]);
+    (async () => {
+      try {
+        let all = [];
+        let next = `/playlists/${selectedPlaylist.id}/tracks?limit=100`;
+        while (next && all.length < 300) {
+          const data = await spotifyGet(next, token);
+          all = all.concat(data.items.map((i) => i.track).filter(Boolean));
+          next = data.next ? data.next.replace("https://api.spotify.com/v1", "") : null;
+        }
+        if (!cancelled) setPlaylistTracks(all);
+      } catch (e) {
+        if (!cancelled) setError("Couldn't load playlist tracks: " + e.message);
+      } finally {
+        if (!cancelled) setPlaylistLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedPlaylist, token]);
+
   function logout() {
     localStorage.removeItem("spotify_token");
     setToken("");
@@ -215,6 +266,9 @@ export default function App() {
     setMatches([]);
     setSearchResults([]);
     setTrackGenres([]);
+    setPlaylists([]);
+    setSelectedPlaylist(null);
+    setPlaylistTracks([]);
   }
 
   const searchTracks = useCallback(async () => {
@@ -368,6 +422,8 @@ export default function App() {
           token,
         );
         tracks = data.items;
+      } else if (matchSource === "playlist") {
+        tracks = playlistTracks;
       }
 
       const candidates = tracks
@@ -428,7 +484,7 @@ export default function App() {
     } finally {
       setMatchLoading(false);
     }
-  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres]);
+  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres, playlistTracks]);
 
   return (
     <div style={styles.root}>
@@ -576,6 +632,7 @@ export default function App() {
                     { val: "recommendations", label: "Recommendations" },
                     { val: "library", label: "Your Library" },
                     { val: "top", label: "Your Top Tracks" },
+                    { val: "playlist", label: "A Playlist" },
                   ].map(({ val, label }) => (
                     <label key={val} style={styles.radioLabel}>
                       <input
@@ -591,6 +648,37 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              {matchSource === "playlist" && (
+                <div style={styles.controlGroup}>
+                  <label style={styles.label}>Select Playlist</label>
+                  {playlistLoading && playlists.length === 0 ? (
+                    <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading playlists…</span>
+                  ) : (
+                    <select
+                      style={{ ...styles.input, cursor: "pointer" }}
+                      value={selectedPlaylist?.id ?? ""}
+                      onChange={(e) => {
+                        setSelectedPlaylist(playlists.find((p) => p.id === e.target.value) ?? null);
+                      }}
+                    >
+                      <option value="">Choose a playlist…</option>
+                      {playlists.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.tracks?.total ?? "?"} tracks)
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {selectedPlaylist && playlistLoading && (
+                    <span style={{ fontSize: "12px", color: "#b0a898" }}>Loading tracks…</span>
+                  )}
+                  {selectedPlaylist && !playlistLoading && playlistTracks.length > 0 && (
+                    <span style={{ fontSize: "12px", color: "#b0a898" }}>
+                      {playlistTracks.length} tracks ready
+                    </span>
+                  )}
+                </div>
+              )}
               <div style={styles.controlGroup}>
                 <label style={styles.label}>Filters</label>
                 <label style={styles.radioLabel}>
