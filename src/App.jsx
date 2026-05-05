@@ -172,6 +172,7 @@ export default function App() {
   const [selectedTrack, setSelectedTrack] = useState(null);
   const [audioFeatures, setAudioFeatures] = useState(null);
   const [matches, setMatches] = useState([]);
+  const [matchAttempted, setMatchAttempted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [matchLoading, setMatchLoading] = useState(false);
   const [error, setError] = useState("");
@@ -264,14 +265,14 @@ export default function App() {
   function logout() {
     localStorage.removeItem("spotify_token");
     setToken(""); setSelectedTrack(null); setAudioFeatures(null);
-    setMatches([]); setSearchResults([]); setTrackGenres([]);
+    setMatches([]); setMatchAttempted(false); setSearchResults([]); setTrackGenres([]);
     setPlaylists([]); setSelectedPlaylist(null); setPlaylistTracks([]); setPlaylistError("");
   }
 
   const searchTracks = useCallback(async () => {
     if (!searchQuery.trim()) return;
     setLoading(true); setError(""); setSearchResults([]);
-    setSelectedTrack(null); setAudioFeatures(null); setMatches([]);
+    setSelectedTrack(null); setAudioFeatures(null); setMatches([]); setMatchAttempted(false);
     try {
       const data = await spotifyGet(`/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, token);
       setSearchResults(data.tracks.items);
@@ -285,7 +286,7 @@ export default function App() {
 
   const selectTrack = useCallback(
     async (track) => {
-      setSelectedTrack(track); setSearchResults([]); setMatches([]);
+      setSelectedTrack(track); setSearchResults([]); setMatches([]); setMatchAttempted(false);
       setError(""); setLoading(true);
       try {
         const artistName = track.artists?.[0]?.name;
@@ -317,7 +318,7 @@ export default function App() {
 
   const findMatches = useCallback(async () => {
     if (!audioFeatures) return;
-    setMatchLoading(true); setError(""); setMatches([]);
+    setMatchLoading(true); setError(""); setMatches([]); setMatchAttempted(true);
     const hasAudio = audioFeatures.key !== -1;
     const spotifyIdFromHref = (href) => href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
 
@@ -338,8 +339,7 @@ export default function App() {
         }
         // No Last.fm tags — fall back to audio-feature inference
         const cat = inferGenreCategory(featMap[t.id]);
-        if (!cat) return true;
-        return trackGenres.some((tg) => tagsMatch(cat, tg));
+        return cat ? trackGenres.some((tg) => tagsMatch(cat, tg)) : false;
       });
       return filtered;
     };
@@ -374,20 +374,19 @@ export default function App() {
         const enriched = (spotifyTracks ?? []).filter(Boolean);
         const genreFiltered = await applyGenreFilter(enriched, featMap);
 
-        // Apply same key + BPM filters as library/top modes
         const validMatches = [];
         for (const t of genreFiltered) {
           const feat = featMap[t.id];
           if (!feat || feat.key === -1 || feat.tempo <= 0) continue;
-          if (hasAudio && feat.key !== audioFeatures.key) continue;
-          if (hasAudio && feat.mode !== audioFeatures.mode) continue;
+          if (hasAudio && (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode)) continue;
           const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
           const halfDouble =
             Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
             Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
           if (!hasAudio || bpmDiff <= bpmTolerance || halfDouble) {
             validMatches.push({
-              track: t, features: feat,
+              track: t,
+              features: feat,
               bpmDiff: Math.round(bpmDiff * 10) / 10,
               isHalfDouble: hasAudio && bpmDiff > bpmTolerance && halfDouble,
             });
@@ -701,9 +700,9 @@ export default function App() {
           </section>
         )}
 
-        {matches.length === 0 && !matchLoading && audioFeatures && selectedTrack && (
+        {matches.length === 0 && matchAttempted && !matchLoading && audioFeatures && selectedTrack && (
           <p style={{ color: T.dim, textAlign: "center", marginTop: 8 }}>
-            No matches yet — hit "Find Harmonic Matches" above.
+            No harmonic matches found. Try a wider BPM tolerance, another source, or turn off genre matching.
           </p>
         )}
       </main>
