@@ -262,8 +262,9 @@ export default function App() {
             throw e;
           }
           if (!Array.isArray(data.items)) {
+            const dbg = data._debug ? ` | proxy: ${JSON.stringify(data._debug)}` : "";
             throw new Error(
-              `unexpected shape — items type: ${typeof data.items}, top-level keys: ${JSON.stringify(Object.keys(data ?? {}).slice(0, 10))}`
+              `shape err — items type: ${typeof data.items}, keys: ${JSON.stringify(Object.keys(data ?? {}).slice(0, 10))}${dbg}`
             );
           }
           const items = data.items.map((i) => i.track).filter(Boolean);
