@@ -28,26 +28,37 @@ export default async function handler(req, res) {
     }
 
     if (isFirstPage) {
-      // Spotify returns tracks under data.tracks normally, but under data directly
-      // when additional_types=track is passed — handle both shapes.
+      // Spotify's shape varies: tracks can be at data.tracks, data, or data.items (paging obj)
       const page = data.tracks ?? data;
-      if (!Array.isArray(page.items)) {
+      let trackItems, nextUrl, total;
+
+      if (Array.isArray(page.items)) {
+        // Standard shape: page.items is the array
+        trackItems = page.items;
+        nextUrl = page.next ?? null;
+        total = page.total ?? page.items.length;
+      } else if (page.items && Array.isArray(page.items.items)) {
+        // Nested shape: page.items is itself a paging object
+        trackItems = page.items.items;
+        nextUrl = page.items.next ?? null;
+        total = page.items.total ?? trackItems.length;
+      } else {
         return res.status(200).json({
           items: [],
           next: null,
           total: 0,
           _debug: {
-            msg: "items not array after fallback",
-            pageKeys: Object.keys(page ?? {}),
-            dataKeys: Object.keys(data ?? {}),
+            msg: "could not locate track items",
+            itemsType: typeof page.items,
+            itemsIsNull: page.items === null,
+            itemsKeys: page.items && typeof page.items === "object"
+              ? Object.keys(page.items).slice(0, 8)
+              : null,
           },
         });
       }
-      return res.status(200).json({
-        items: page.items,
-        next: page.next ?? null,
-        total: page.total ?? page.items.length,
-      });
+
+      return res.status(200).json({ items: trackItems, next: nextUrl, total });
     }
 
     return res.status(200).json(data);
