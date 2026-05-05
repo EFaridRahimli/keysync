@@ -100,43 +100,65 @@ async function reccoFeatures(spotifyIds) {
     if (!res.ok) return [];
     const data = await res.json();
     return data.content ?? [];
-  } catch (_e) {
+  } catch {
     return [];
   }
 }
 
-// ─── Genre inference from audio features ─────────────────────────────────────
-// ReccoBeats has no genre field, so we infer category from acoustic properties.
-// This reliably separates hip-hop (high speechiness) from Disney/orchestral (low speechiness).
-function inferGenreCategory(feat) {
-  if (!feat) return null;
-  const s = feat.speechiness ?? 0;
-  const d = feat.danceability ?? 0;
-  const a = feat.acousticness ?? 0;
-  const e = feat.energy ?? 0;
-  const inst = feat.instrumentalness ?? 0;
-  const t = feat.tempo ?? 0;
+// ─── Last.fm genre lookup ─────────────────────────────────────────────────────
+// Module-level cache so repeated lookups for the same artist skip the network
+const _lfmCache = {};
 
-  if (inst > 0.7) return "instrumental";
-  if (s > 0.4) return "spoken";
-  if (s > 0.15 && d > 0.4) return "rap";
-  if (a > 0.7 && e < 0.5) return "acoustic";
-  if (e > 0.78 && t > 118 && d > 0.65 && s < 0.09) return "edm";
-  if (e > 0.68 && a < 0.25 && s < 0.1) return "rock";
-  if (d > 0.6 && e > 0.45 && s < 0.12) return "pop";
-  return "other";
+// Tags that aren't genres — Last.fm users tag artists with these too
+const NOISE_TAGS = new Set([
+  "seen live","favourites","favourite","love","beautiful","awesome","good","best",
+  "amazing","classic","under 2000 listeners","all","my music","music","spotify",
+]);
+
+async function lastfmGenres(artistName) {
+  if (!artistName) return [];
+  const key = artistName.toLowerCase();
+  if (_lfmCache[key] !== undefined) return _lfmCache[key];
+  try {
+    const res = await fetch(`/api/lastfm?artist=${encodeURIComponent(artistName)}`);
+    if (!res.ok) { _lfmCache[key] = []; return []; }
+    const data = await res.json();
+    const tags = (data?.toptags?.tag ?? [])
+      .filter((t) => t.count > 0 && !NOISE_TAGS.has(t.name.toLowerCase()))
+      .slice(0, 8)
+      .map((t) => t.name.toLowerCase());
+    _lfmCache[key] = tags;
+    return tags;
+  } catch {
+    _lfmCache[key] = [];
+    return [];
+  }
 }
 
-const GENRE_LABELS = {
-  rap: "Rap / Hip-Hop",
-  spoken: "Spoken Word",
-  acoustic: "Acoustic / Folk",
-  edm: "Electronic",
-  rock: "Rock",
-  pop: "Pop / R&B",
-  instrumental: "Instrumental",
-  other: "Other",
-};
+// Fetch Last.fm genres for every unique primary artist in a track list (parallel)
+async function buildGenreMap(tracks) {
+  const names = [...new Set(tracks.map((t) => t.artists?.[0]?.name).filter(Boolean))];
+  await Promise.all(names.map(lastfmGenres)); // populates cache
+  const map = {};
+  for (const name of names) map[name] = _lfmCache[name.toLowerCase()] ?? [];
+  return map;
+}
+
+// ─── Audio-feature inference (fallback when Last.fm has no tags) ──────────────
+function inferGenreCategory(feat) {
+  if (!feat) return null;
+  const s = feat.speechiness ?? 0, d = feat.danceability ?? 0,
+        a = feat.acousticness ?? 0, e = feat.energy ?? 0,
+        inst = feat.instrumentalness ?? 0, t = feat.tempo ?? 0;
+  if (inst > 0.7) return "instrumental";
+  if (s > 0.4) return "spoken word";
+  if (s > 0.15 && d > 0.4) return "hip-hop";
+  if (a > 0.7 && e < 0.5) return "acoustic";
+  if (e > 0.78 && t > 118 && d > 0.65 && s < 0.09) return "electronic";
+  if (e > 0.68 && a < 0.25 && s < 0.1) return "rock";
+  if (d > 0.6 && e > 0.45 && s < 0.12) return "pop";
+  return null;
+}
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -186,8 +208,7 @@ export default function App() {
     setPlaylistLoading(true);
     (async () => {
       try {
-        let all = [];
-        let next = `/me/playlists?limit=50`;
+        let all = [], next = `/me/playlists?limit=50`;
         while (next && all.length < 200) {
           const data = await spotifyGet(next, token);
           all = all.concat(data.items.filter(Boolean));
@@ -210,22 +231,15 @@ export default function App() {
     setPlaylistTracks([]);
     (async () => {
       try {
-        let all = [];
-        let offset = 0;
+        let all = [], offset = 0;
         while (all.length < 300) {
           const r = await fetch(
             `/api/spotify-playlist?playlistId=${selectedPlaylist.id}&offset=${offset}`,
             { headers: { Authorization: `Bearer ${token.trim()}` } },
           );
           const data = await r.json();
-          if (!r.ok) {
-            const e = new Error(data?.error?.message ?? `HTTP ${r.status}`);
-            e.status = r.status;
-            throw e;
-          }
-          const items = (data.items ?? [])
-            .map((i) => i.item ?? i.track ?? (i.id ? i : null))
-            .filter(Boolean);
+          if (!r.ok) { const e = new Error(data?.error?.message ?? `HTTP ${r.status}`); e.status = r.status; throw e; }
+          const items = (data.items ?? []).map((i) => i.item ?? i.track ?? (i.id ? i : null)).filter(Boolean);
           all = all.concat(items);
           if (items.length < 50 || !data.next) break;
           offset += 50;
@@ -245,31 +259,17 @@ export default function App() {
 
   function logout() {
     localStorage.removeItem("spotify_token");
-    setToken("");
-    setSelectedTrack(null);
-    setAudioFeatures(null);
-    setMatches([]);
-    setSearchResults([]);
-    setTrackGenres([]);
-    setPlaylists([]);
-    setSelectedPlaylist(null);
-    setPlaylistTracks([]);
-    setPlaylistError("");
+    setToken(""); setSelectedTrack(null); setAudioFeatures(null);
+    setMatches([]); setSearchResults([]); setTrackGenres([]);
+    setPlaylists([]); setSelectedPlaylist(null); setPlaylistTracks([]); setPlaylistError("");
   }
 
   const searchTracks = useCallback(async () => {
     if (!searchQuery.trim()) return;
-    setLoading(true);
-    setError("");
-    setSearchResults([]);
-    setSelectedTrack(null);
-    setAudioFeatures(null);
-    setMatches([]);
+    setLoading(true); setError(""); setSearchResults([]);
+    setSelectedTrack(null); setAudioFeatures(null); setMatches([]);
     try {
-      const data = await spotifyGet(
-        `/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`,
-        token,
-      );
+      const data = await spotifyGet(`/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, token);
       setSearchResults(data.tracks.items);
     } catch (e) {
       setError(e.message);
@@ -281,20 +281,26 @@ export default function App() {
 
   const selectTrack = useCallback(
     async (track) => {
-      setSelectedTrack(track);
-      setSearchResults([]);
-      setMatches([]);
-      setError("");
-      setLoading(true);
+      setSelectedTrack(track); setSearchResults([]); setMatches([]);
+      setError(""); setLoading(true);
       try {
-        const featResult = await reccoFeatures([track.id]);
+        const artistName = track.artists?.[0]?.name;
+        // Fetch audio features and Last.fm tags in parallel
+        const [featResult, lfmTags] = await Promise.all([
+          reccoFeatures([track.id]),
+          lastfmGenres(artistName),
+        ]);
         const feat = featResult?.[0];
         setAudioFeatures(
           feat ? { key: feat.key, mode: feat.mode, tempo: feat.tempo } : { key: -1, mode: 0, tempo: 0 },
         );
-        // Infer genre from ReccoBeats audio features (speechiness, danceability, etc.)
-        const cat = inferGenreCategory(feat);
-        setTrackGenres(cat ? [cat] : []);
+        if (lfmTags.length > 0) {
+          setTrackGenres(lfmTags);
+        } else {
+          // Fall back to audio-feature inference when Last.fm has no tags
+          const cat = inferGenreCategory(feat);
+          setTrackGenres(cat ? [cat] : []);
+        }
       } catch (e) {
         setError("Couldn't fetch audio features: " + e.message);
         setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
@@ -307,20 +313,23 @@ export default function App() {
 
   const findMatches = useCallback(async () => {
     if (!audioFeatures) return;
-    setMatchLoading(true);
-    setError("");
-    setMatches([]);
+    setMatchLoading(true); setError(""); setMatches([]);
     const hasAudio = audioFeatures.key !== -1;
-    const sourceCategory = trackGenres[0] ?? null;
-
     const spotifyIdFromHref = (href) => href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
 
-    // Genre filter using inferred audio categories (no Spotify artist calls needed)
-    const genreMatch = (feat) => {
-      if (!filterByGenre || !sourceCategory) return true;
-      const cat = inferGenreCategory(feat);
-      if (!cat) return true;
-      return cat === sourceCategory;
+    // Genre filter using Last.fm artist tags + substring matching
+    const applyGenreFilter = async (list) => {
+      if (!filterByGenre || !trackGenres.length) return list;
+      const genreMap = await buildGenreMap(list);
+      return list.filter((t) => {
+        const artistName = t.artists?.[0]?.name;
+        const artistTags = genreMap[artistName] ?? [];
+        // If Last.fm has no tags for this artist, don't filter them out
+        if (!artistTags.length) return true;
+        return artistTags.some((tag) =>
+          trackGenres.some((tg) => tag.includes(tg) || tg.includes(tag))
+        );
+      });
     };
 
     try {
@@ -351,15 +360,14 @@ export default function App() {
         });
 
         const enriched = (spotifyTracks ?? []).filter(Boolean);
-        const genreFiltered = enriched.filter((t) => genreMatch(featMap[t.id]));
+        const genreFiltered = await applyGenreFilter(enriched);
 
         setMatches(
           genreFiltered.map((t) => {
             const feat = featMap[t.id] ?? null;
-            const bpmDiff =
-              feat?.tempo != null
-                ? Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10
-                : null;
+            const bpmDiff = feat?.tempo != null
+              ? Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10
+              : null;
             return { track: t, features: feat, bpmDiff, isHalfDouble: false };
           }),
         );
@@ -383,25 +391,24 @@ export default function App() {
 
       const candidates = tracks.filter((t) => t && t.id !== selectedTrack.id).slice(0, 200);
 
-      // Fetch ReccoBeats features first so we can use them for genre AND key/tempo filtering
+      // Genre filter first (Last.fm, parallel)
+      const genreCandidates = await applyGenreFilter(candidates);
+
+      if (!hasAudio) {
+        setMatches(genreCandidates.map((track) => ({ track, features: null, bpmDiff: null, isHalfDouble: false })));
+        return;
+      }
+
+      // Fetch ReccoBeats features for genre-filtered tracks only
       const featMap = {};
       const BATCH = 40;
-      for (let i = 0; i < candidates.length; i += BATCH) {
-        const ids = candidates.slice(i, i + BATCH).map((t) => t.id);
+      for (let i = 0; i < genreCandidates.length; i += BATCH) {
+        const ids = genreCandidates.slice(i, i + BATCH).map((t) => t.id);
         const feats = await reccoFeatures(ids);
         feats.forEach((f) => {
           const sid = spotifyIdFromHref(f.href);
           if (sid) featMap[sid] = f;
         });
-      }
-
-      const genreCandidates = candidates.filter((t) => genreMatch(featMap[t.id]));
-
-      if (!hasAudio) {
-        setMatches(
-          genreCandidates.map((track) => ({ track, features: null, bpmDiff: null, isHalfDouble: false })),
-        );
-        return;
       }
 
       const matched = [];
@@ -416,8 +423,7 @@ export default function App() {
           Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
         if (bpmDiff <= bpmTolerance || halfDouble) {
           matched.push({
-            track,
-            features: feat,
+            track, features: feat,
             bpmDiff: Math.round(bpmDiff * 10) / 10,
             isHalfDouble: bpmDiff > bpmTolerance && halfDouble,
           });
@@ -433,7 +439,7 @@ export default function App() {
     }
   }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres]);
 
-  const genreLabel = trackGenres.length > 0 ? (GENRE_LABELS[trackGenres[0]] ?? trackGenres[0]) : null;
+  const genreDisplay = trackGenres.slice(0, 3).join(" · ");
 
   return (
     <div style={styles.root}>
@@ -457,9 +463,7 @@ export default function App() {
             <h2 style={styles.cardTitle}>Connect Spotify</h2>
             <p style={styles.cardDesc}>Log in with your Spotify account to get started.</p>
             {error && <p style={styles.error}>{error}</p>}
-            <button style={styles.btnPrimary} onClick={loginWithSpotify}>
-              Login with Spotify
-            </button>
+            <button style={styles.btnPrimary} onClick={loginWithSpotify}>Login with Spotify</button>
           </section>
         )}
 
@@ -484,10 +488,7 @@ export default function App() {
               <ul style={styles.resultList}>
                 {searchResults.map((t) => (
                   <li key={t.id} style={styles.resultItem} onClick={() => selectTrack(t)}>
-                    <img
-                      src={t.album?.images?.[2]?.url ?? t.album?.images?.[0]?.url}
-                      alt="" style={styles.thumb}
-                    />
+                    <img src={t.album?.images?.[2]?.url ?? t.album?.images?.[0]?.url} alt="" style={styles.thumb} />
                     <div>
                       <div style={styles.trackName}>{t.name}</div>
                       <div style={styles.artistName}>{t.artists.map((a) => a.name).join(", ")}</div>
@@ -506,15 +507,11 @@ export default function App() {
             <p style={styles.cardDesc}>Pick a playlist and tap a track to analyse it.</p>
             {playlistError === "reauth" ? (
               <div>
-                <p style={{ fontSize: "13px", color: "#e07070", marginBottom: "8px" }}>
-                  Playlist access was not granted.
-                </p>
+                <p style={{ fontSize: "13px", color: "#e07070", marginBottom: "8px" }}>Playlist access was not granted.</p>
                 <p style={{ fontSize: "12px", color: T.dim, marginBottom: "12px", lineHeight: "1.6" }}>
                   Go to <strong>spotify.com/account/apps</strong>, find this app and click <strong>Remove Access</strong>, then log in below.
                 </p>
-                <button style={styles.btnPrimary} onClick={() => { logout(); loginWithSpotify(true); }}>
-                  Log in fresh
-                </button>
+                <button style={styles.btnPrimary} onClick={() => { logout(); loginWithSpotify(true); }}>Log in fresh</button>
               </div>
             ) : (
               <>
@@ -537,12 +534,8 @@ export default function App() {
                     ))}
                   </select>
                 )}
-                {playlistError && (
-                  <p style={{ fontSize: "12px", color: "#e07070", margin: "0 0 8px" }}>{playlistError}</p>
-                )}
-                {selectedPlaylist && playlistLoading && (
-                  <p style={{ fontSize: "12px", color: T.dim, margin: 0 }}>Loading tracks…</p>
-                )}
+                {playlistError && <p style={{ fontSize: "12px", color: "#e07070", margin: "0 0 8px" }}>{playlistError}</p>}
+                {selectedPlaylist && playlistLoading && <p style={{ fontSize: "12px", color: T.dim, margin: 0 }}>Loading tracks…</p>}
               </>
             )}
             {selectedPlaylist && !playlistLoading && playlistTracks.length === 0 && !playlistError && (
@@ -554,9 +547,7 @@ export default function App() {
               <ul style={{ ...styles.resultList, maxHeight: "320px", overflowY: "auto" }}>
                 {playlistTracks.map((t) => (
                   <li key={t.id} style={styles.resultItem} onClick={() => selectTrack(t)}>
-                    {t.album?.images?.[2]?.url && (
-                      <img src={t.album.images[2].url} alt="" style={styles.thumb} />
-                    )}
+                    {t.album?.images?.[2]?.url && <img src={t.album.images[2].url} alt="" style={styles.thumb} />}
                     <div>
                       <div style={styles.trackName}>{t.name}</div>
                       <div style={styles.artistName}>{t.artists?.map((a) => a.name).join(", ")}</div>
@@ -570,9 +561,7 @@ export default function App() {
 
         {/* ── Analyzing indicator ── */}
         {selectedTrack && loading && !audioFeatures && (
-          <p style={{ color: "#1db954", textAlign: "center", marginTop: 8 }}>
-            Fetching audio features…
-          </p>
+          <p style={{ color: "#1db954", textAlign: "center", marginTop: 8 }}>Fetching audio features…</p>
         )}
 
         {/* ── Selected Track ── */}
@@ -585,22 +574,18 @@ export default function App() {
               />
               <div>
                 <div style={styles.selectedTrackName}>{selectedTrack.name}</div>
-                <div style={styles.selectedArtist}>
-                  {selectedTrack.artists.map((a) => a.name).join(", ")}
-                </div>
+                <div style={styles.selectedArtist}>{selectedTrack.artists.map((a) => a.name).join(", ")}</div>
                 <div style={styles.badgeRow}>
-                  <span style={styles.badge}>
-                    🎵 {keyLabel(audioFeatures.key, audioFeatures.mode)}
-                  </span>
+                  <span style={styles.badge}>🎵 {keyLabel(audioFeatures.key, audioFeatures.mode)}</span>
                   <span style={styles.badge}>
                     ⚡ {audioFeatures.tempo > 0 ? `${Math.round(audioFeatures.tempo)} BPM` : "BPM unknown"}
                   </span>
                   <span style={{ ...styles.badge, background: "rgba(29,185,84,0.12)", color: "#1db954", border: "1px solid rgba(29,185,84,0.2)" }}>
                     🎡 {getCamelot(audioFeatures.key, audioFeatures.mode)}
                   </span>
-                  {genreLabel && (
+                  {genreDisplay && (
                     <span style={{ ...styles.badge, background: "rgba(130,100,200,0.15)", color: "#b8a0f0", border: "1px solid rgba(130,100,200,0.25)" }}>
-                      {genreLabel}
+                      {genreDisplay}
                     </span>
                   )}
                 </div>
@@ -624,12 +609,8 @@ export default function App() {
                     { val: "top", label: "Your Top Tracks" },
                   ].map(({ val, label }) => (
                     <label key={val} style={styles.radioLabel}>
-                      <input
-                        type="radio" name="source" value={val}
-                        checked={matchSource === val}
-                        onChange={() => setMatchSource(val)}
-                        style={{ accentColor: "#1db954" }}
-                      />
+                      <input type="radio" name="source" value={val} checked={matchSource === val}
+                        onChange={() => setMatchSource(val)} style={{ accentColor: "#1db954" }} />
                       {label}
                     </label>
                   ))}
@@ -638,19 +619,16 @@ export default function App() {
               <div style={styles.controlGroup}>
                 <label style={styles.label}>Filters</label>
                 <label style={styles.radioLabel}>
-                  <input
-                    type="checkbox" checked={filterByGenre}
-                    onChange={(e) => setFilterByGenre(e.target.checked)}
-                    style={{ accentColor: "#1db954" }}
-                  />
+                  <input type="checkbox" checked={filterByGenre}
+                    onChange={(e) => setFilterByGenre(e.target.checked)} style={{ accentColor: "#1db954" }} />
                   Match genre
-                  {genreLabel ? (
+                  {genreDisplay ? (
                     <span style={{ color: "#787ba0", fontSize: "11px", marginLeft: "6px" }}>
-                      ({genreLabel})
+                      ({trackGenres.slice(0, 2).join(", ")})
                     </span>
                   ) : (
                     <span style={{ color: "#e07070", fontSize: "11px", marginLeft: "6px" }}>
-                      (no genre detected — filter won't apply)
+                      (no genre detected)
                     </span>
                   )}
                 </label>
@@ -678,10 +656,7 @@ export default function App() {
               {matches.map(({ track, features, bpmDiff, isHalfDouble }) => (
                 <li key={track.id} style={styles.matchItem}>
                   {track.album?.images?.[0]?.url && (
-                    <img
-                      src={track.album?.images?.[2]?.url ?? track.album?.images?.[0]?.url}
-                      alt="" style={styles.thumb}
-                    />
+                    <img src={track.album?.images?.[2]?.url ?? track.album?.images?.[0]?.url} alt="" style={styles.thumb} />
                   )}
                   <div style={{ flex: 1 }}>
                     <div style={styles.trackName}>{track.name}</div>
@@ -695,13 +670,7 @@ export default function App() {
                       </span>
                     </div>
                   )}
-                  <a
-                    href={track.external_urls?.spotify}
-                    target="_blank" rel="noreferrer"
-                    style={styles.spotifyBtn}
-                  >
-                    ▶
-                  </a>
+                  <a href={track.external_urls?.spotify} target="_blank" rel="noreferrer" style={styles.spotifyBtn}>▶</a>
                 </li>
               ))}
             </ul>
@@ -739,195 +708,100 @@ const neo = {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = {
   root: {
-    minHeight: "100vh",
-    background: T.bg,
-    color: T.text,
+    minHeight: "100vh", background: T.bg, color: T.text,
     fontFamily: "system-ui, -apple-system, 'Helvetica Neue', sans-serif",
-    fontWeight: 300,
-    overflowX: "hidden",
-    position: "relative",
+    fontWeight: 300, overflowX: "hidden", position: "relative",
   },
   bgGlow: {
-    position: "fixed",
-    inset: 0,
+    position: "fixed", inset: 0,
     background: [
       "radial-gradient(ellipse at 15% 15%, rgba(29,185,84,0.04) 0%, transparent 50%)",
       "radial-gradient(ellipse at 85% 80%, rgba(80,85,130,0.07) 0%, transparent 50%)",
     ].join(", "),
-    pointerEvents: "none",
-    zIndex: 0,
+    pointerEvents: "none", zIndex: 0,
   },
   header: {
-    textAlign: "center",
-    padding: "52px 20px 26px",
-    background: "rgba(25,27,39,0.92)",
-    backdropFilter: "blur(20px)",
-    WebkitBackdropFilter: "blur(20px)",
-    borderBottom: `1px solid ${T.border}`,
-    position: "relative",
-    zIndex: 1,
+    textAlign: "center", padding: "52px 20px 26px",
+    background: "rgba(25,27,39,0.92)", backdropFilter: "blur(20px)",
+    WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${T.border}`,
+    position: "relative", zIndex: 1,
   },
-  logo: {
-    display: "flex", alignItems: "center", justifyContent: "center",
-    gap: "10px", marginBottom: "6px",
-  },
+  logo: { display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginBottom: "6px" },
   logoIcon: { fontSize: "22px", color: "#1db954" },
   logoText: { fontSize: "28px", fontWeight: 300, letterSpacing: "0.05em", color: T.text },
-  tagline: {
-    color: T.dim, fontSize: "11px", letterSpacing: "0.15em",
-    textTransform: "uppercase", margin: 0, fontWeight: 300,
-  },
+  tagline: { color: T.dim, fontSize: "11px", letterSpacing: "0.15em", textTransform: "uppercase", margin: 0, fontWeight: 300 },
   logoutBtn: {
-    marginTop: "14px",
-    background: "linear-gradient(145deg, #2c2e42, #1c1e2e)",
-    border: T.border,
-    color: T.dim, borderRadius: "8px", padding: "5px 16px",
-    fontSize: "11px", cursor: "pointer", fontFamily: "inherit",
-    fontWeight: 300, letterSpacing: "0.05em", boxShadow: neo.soft,
+    marginTop: "14px", background: "linear-gradient(145deg, #2c2e42, #1c1e2e)",
+    border: T.border, color: T.dim, borderRadius: "8px", padding: "5px 16px",
+    fontSize: "11px", cursor: "pointer", fontFamily: "inherit", fontWeight: 300,
+    letterSpacing: "0.05em", boxShadow: neo.soft,
   },
   main: {
     maxWidth: "620px", margin: "0 auto", padding: "32px 20px 80px",
-    display: "flex", flexDirection: "column", gap: "14px",
-    position: "relative", zIndex: 1,
+    display: "flex", flexDirection: "column", gap: "14px", position: "relative", zIndex: 1,
   },
-  card: {
-    background: T.surface,
-    border: `1px solid ${T.border}`,
-    borderRadius: "18px",
-    padding: "26px",
-    boxShadow: neo.raised,
-  },
-  cardTitle: {
-    margin: "0 0 6px", fontSize: "13px", fontWeight: 500,
-    color: T.text, letterSpacing: "0.05em",
-  },
-  cardDesc: {
-    margin: "0 0 20px", fontSize: "13px", color: T.dim,
-    lineHeight: "1.6", fontWeight: 300,
-  },
+  card: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: "18px", padding: "26px", boxShadow: neo.raised },
+  cardTitle: { margin: "0 0 6px", fontSize: "13px", fontWeight: 500, color: T.text, letterSpacing: "0.05em" },
+  cardDesc: { margin: "0 0 20px", fontSize: "13px", color: T.dim, lineHeight: "1.6", fontWeight: 300 },
   inputRow: { display: "flex", gap: "8px" },
   input: {
-    flex: 1,
-    background: T.input,
-    border: `1px solid ${T.border}`,
-    borderRadius: "10px",
-    padding: "10px 14px",
-    color: T.text,
-    fontSize: "13px",
-    outline: "none",
-    fontFamily: "inherit",
-    fontWeight: 300,
-    boxShadow: neo.inset,
+    flex: 1, background: T.input, border: `1px solid ${T.border}`, borderRadius: "10px",
+    padding: "10px 14px", color: T.text, fontSize: "13px", outline: "none",
+    fontFamily: "inherit", fontWeight: 300, boxShadow: neo.inset,
   },
   btnPrimary: {
-    background: "linear-gradient(145deg, #2e3048, #1c1e2e)",
-    color: T.text,
-    border: `1px solid ${T.border}`,
-    borderRadius: "10px",
-    padding: "10px 22px",
-    fontWeight: 400,
-    fontSize: "12px",
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    letterSpacing: "0.08em",
-    fontFamily: "inherit",
-    boxShadow: neo.raised,
+    background: "linear-gradient(145deg, #2e3048, #1c1e2e)", color: T.text,
+    border: `1px solid ${T.border}`, borderRadius: "10px", padding: "10px 22px",
+    fontWeight: 400, fontSize: "12px", cursor: "pointer", whiteSpace: "nowrap",
+    letterSpacing: "0.08em", fontFamily: "inherit", boxShadow: neo.raised,
   },
   error: {
-    color: "#e07070", fontSize: "12px", marginTop: "10px",
-    background: "rgba(60,20,20,0.8)",
-    border: "1px solid rgba(200,80,80,0.2)",
-    padding: "9px 13px", borderRadius: "10px",
-    marginBottom: "12px", fontWeight: 300,
-    boxShadow: neo.inset,
+    color: "#e07070", fontSize: "12px", marginTop: "10px", background: "rgba(60,20,20,0.8)",
+    border: "1px solid rgba(200,80,80,0.2)", padding: "9px 13px", borderRadius: "10px",
+    marginBottom: "12px", fontWeight: 300, boxShadow: neo.inset,
   },
-  resultList: {
-    listStyle: "none", margin: "14px 0 0", padding: 0,
-    display: "flex", flexDirection: "column", gap: "4px",
-  },
+  resultList: { listStyle: "none", margin: "14px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: "4px" },
   resultItem: {
-    display: "flex", alignItems: "center", gap: "12px",
-    padding: "9px 11px", borderRadius: "10px", cursor: "pointer",
-    border: `1px solid ${T.border}`,
-    background: "linear-gradient(145deg, #2c2e42, #232535)",
-    boxShadow: neo.soft,
-    transition: "box-shadow 0.15s",
+    display: "flex", alignItems: "center", gap: "12px", padding: "9px 11px",
+    borderRadius: "10px", cursor: "pointer", border: `1px solid ${T.border}`,
+    background: "linear-gradient(145deg, #2c2e42, #232535)", boxShadow: neo.soft,
   },
-  thumb: {
-    width: "38px", height: "38px", borderRadius: "8px",
-    objectFit: "cover", flexShrink: 0,
-    background: T.input, boxShadow: neo.soft,
-  },
+  thumb: { width: "38px", height: "38px", borderRadius: "8px", objectFit: "cover", flexShrink: 0, background: T.input, boxShadow: neo.soft },
   trackName: { fontSize: "13px", color: T.text, fontWeight: 400 },
   artistName: { fontSize: "12px", color: T.dim, marginTop: "2px", fontWeight: 300 },
-  selectedTrackRow: {
-    display: "flex", gap: "16px", alignItems: "flex-start", marginBottom: "20px",
-  },
-  albumArt: {
-    width: "66px", height: "66px", borderRadius: "12px",
-    objectFit: "cover", flexShrink: 0,
-    background: T.input, boxShadow: neo.raised,
-  },
+  selectedTrackRow: { display: "flex", gap: "16px", alignItems: "flex-start", marginBottom: "20px" },
+  albumArt: { width: "66px", height: "66px", borderRadius: "12px", objectFit: "cover", flexShrink: 0, background: T.input, boxShadow: neo.raised },
   selectedTrackName: { fontSize: "16px", fontWeight: 400, color: T.text, marginBottom: "3px" },
   selectedArtist: { fontSize: "12px", color: T.dim, marginBottom: "10px", fontWeight: 300 },
   badgeRow: { display: "flex", gap: "6px", flexWrap: "wrap" },
   badge: {
-    background: "linear-gradient(145deg, #2e3048, #232535)",
-    border: `1px solid ${T.border}`,
-    borderRadius: "8px", padding: "4px 11px",
-    fontSize: "11px", color: T.dim,
-    fontWeight: 300, letterSpacing: "0.03em",
-    boxShadow: neo.soft,
+    background: "linear-gradient(145deg, #2e3048, #232535)", border: `1px solid ${T.border}`,
+    borderRadius: "8px", padding: "4px 11px", fontSize: "11px", color: T.dim,
+    fontWeight: 300, letterSpacing: "0.03em", boxShadow: neo.soft,
   },
-  controls: {
-    display: "flex", flexDirection: "column", gap: "16px",
-    borderTop: `1px solid ${T.border}`, paddingTop: "20px",
-  },
+  controls: { display: "flex", flexDirection: "column", gap: "16px", borderTop: `1px solid ${T.border}`, paddingTop: "20px" },
   controlGroup: { display: "flex", flexDirection: "column", gap: "8px" },
-  label: {
-    fontSize: "10px", color: T.dim, letterSpacing: "0.12em",
-    textTransform: "uppercase", fontWeight: 400,
-  },
+  label: { fontSize: "10px", color: T.dim, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 400 },
   slider: { accentColor: "#1db954", width: "100%", cursor: "pointer" },
   radioGroup: { display: "flex", gap: "16px", flexWrap: "wrap" },
-  radioLabel: {
-    display: "flex", alignItems: "center", gap: "6px",
-    fontSize: "13px", color: T.dim, cursor: "pointer", fontWeight: 300,
-  },
-  matchList: {
-    listStyle: "none", margin: "14px 0 0", padding: 0,
-    display: "flex", flexDirection: "column", gap: "4px",
-  },
+  radioLabel: { display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: T.dim, cursor: "pointer", fontWeight: 300 },
+  matchList: { listStyle: "none", margin: "14px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: "4px" },
   matchItem: {
-    display: "flex", alignItems: "center", gap: "12px",
-    padding: "10px 12px", borderRadius: "12px",
-    background: "linear-gradient(145deg, #2c2e42, #232535)",
-    border: `1px solid ${T.border}`,
-    boxShadow: neo.soft,
+    display: "flex", alignItems: "center", gap: "12px", padding: "10px 12px",
+    borderRadius: "12px", background: "linear-gradient(145deg, #2c2e42, #232535)",
+    border: `1px solid ${T.border}`, boxShadow: neo.soft,
   },
-  matchMeta: {
-    display: "flex", flexDirection: "column",
-    alignItems: "flex-end", gap: "3px", flexShrink: 0,
-  },
+  matchMeta: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "3px", flexShrink: 0 },
   matchBadge: {
-    background: "linear-gradient(145deg, #2e3048, #232535)",
-    border: `1px solid ${T.border}`,
-    color: T.dim, borderRadius: "6px",
-    padding: "2px 8px", fontSize: "11px",
-    fontWeight: 400, boxShadow: neo.soft,
+    background: "linear-gradient(145deg, #2e3048, #232535)", border: `1px solid ${T.border}`,
+    color: T.dim, borderRadius: "6px", padding: "2px 8px", fontSize: "11px", fontWeight: 400, boxShadow: neo.soft,
   },
   spotifyBtn: {
-    background: "linear-gradient(145deg, #22d45f, #17a348)",
-    color: "#fff", borderRadius: "50%",
-    width: "30px", height: "30px",
+    background: "linear-gradient(145deg, #22d45f, #17a348)", color: "#fff",
+    borderRadius: "50%", width: "30px", height: "30px",
     display: "flex", alignItems: "center", justifyContent: "center",
-    textDecoration: "none", fontSize: "10px", flexShrink: 0,
-    fontWeight: 600,
+    textDecoration: "none", fontSize: "10px", flexShrink: 0, fontWeight: 600,
     boxShadow: "2px 2px 8px rgba(29,185,84,0.2), -1px -1px 4px rgba(80,85,130,0.08)",
   },
-  footer: {
-    textAlign: "center", padding: "24px", fontSize: "11px",
-    color: "#404260", fontWeight: 300, letterSpacing: "0.05em",
-    position: "relative", zIndex: 1,
-  },
+  footer: { textAlign: "center", padding: "24px", fontSize: "11px", color: "#404260", fontWeight: 300, letterSpacing: "0.05em", position: "relative", zIndex: 1 },
 };
