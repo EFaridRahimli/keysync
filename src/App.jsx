@@ -633,7 +633,7 @@ export default function App() {
                     <option value="">Choose a playlist…</option>
                     {playlists.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} — {p.owner?.display_name ?? p.owner?.id ?? "?"} ({p.tracks?.total ?? "?"} tracks)
+                        {p.name} — {p.owner?.display_name ?? p.owner?.id ?? "?"} (tracks:{JSON.stringify(p.tracks)})
                       </option>
                     ))}
                   </select>
