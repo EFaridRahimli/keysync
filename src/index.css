@@ -1,0 +1,7 @@
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; }
+
+select option {
+  background: #252737;
+  color: #e8eaf2;
+}
