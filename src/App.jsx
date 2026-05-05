@@ -93,16 +93,20 @@ function reccoToTrack(t) {
 
 async function reccoFeatures(spotifyIds) {
   if (!spotifyIds.length) return [];
-  try {
-    const params = new URLSearchParams();
-    spotifyIds.forEach((id) => params.append("ids", id));
-    const res = await fetch(`/api/reccobeats?action=features&${params}`);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.content ?? [];
-  } catch {
-    return [];
+  // ReccoBeats features API accepts max 40 IDs per request
+  const BATCH = 40;
+  const results = [];
+  for (let i = 0; i < spotifyIds.length; i += BATCH) {
+    try {
+      const params = new URLSearchParams();
+      spotifyIds.slice(i, i + BATCH).forEach((id) => params.append("ids", id));
+      const res = await fetch(`/api/reccobeats?action=features&${params}`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      results.push(...(data.content ?? []));
+    } catch { /* skip failed batch */ }
   }
+  return results;
 }
 
 // ─── Last.fm genre lookup ─────────────────────────────────────────────────────
@@ -317,22 +321,28 @@ export default function App() {
     const hasAudio = audioFeatures.key !== -1;
     const spotifyIdFromHref = (href) => href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
 
-    // Genre filter: Last.fm tags primary, audio-feature inference fallback
+    // Normalize genre strings for comparison: lowercase + collapse hyphens/spaces
+    const norm = (s) => s.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+    const tagsMatch = (a, b) => { const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na); };
+
+    // Genre filter: Last.fm tags primary, audio-feature inference fallback.
+    // Safety net: if every track is filtered out, return the full list so we
+    // never show an empty results page due to an overly strict genre filter.
     const applyGenreFilter = async (list, featMap = {}) => {
       if (!filterByGenre || !trackGenres.length) return list;
       const genreMap = await buildGenreMap(list);
-      return list.filter((t) => {
+      const filtered = list.filter((t) => {
         const artistTags = genreMap[t.artists?.[0]?.name] ?? [];
         if (artistTags.length > 0) {
-          return artistTags.some((tag) =>
-            trackGenres.some((tg) => tag.includes(tg) || tg.includes(tag))
-          );
+          return artistTags.some((tag) => trackGenres.some((tg) => tagsMatch(tag, tg)));
         }
         // No Last.fm tags — fall back to audio-feature inference
         const cat = inferGenreCategory(featMap[t.id]);
-        if (!cat) return true; // truly no data, include
-        return trackGenres.some((tg) => cat.includes(tg) || tg.includes(cat));
+        if (!cat) return true;
+        return trackGenres.some((tg) => tagsMatch(cat, tg));
       });
+      // Safety net: never return empty — prefer unfiltered over no results
+      return filtered.length > 0 ? filtered : list;
     };
 
     try {
