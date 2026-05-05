@@ -317,18 +317,21 @@ export default function App() {
     const hasAudio = audioFeatures.key !== -1;
     const spotifyIdFromHref = (href) => href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
 
-    // Genre filter using Last.fm artist tags + substring matching
-    const applyGenreFilter = async (list) => {
+    // Genre filter: Last.fm tags primary, audio-feature inference fallback
+    const applyGenreFilter = async (list, featMap = {}) => {
       if (!filterByGenre || !trackGenres.length) return list;
       const genreMap = await buildGenreMap(list);
       return list.filter((t) => {
-        const artistName = t.artists?.[0]?.name;
-        const artistTags = genreMap[artistName] ?? [];
-        // If Last.fm has no tags for this artist, don't filter them out
-        if (!artistTags.length) return true;
-        return artistTags.some((tag) =>
-          trackGenres.some((tg) => tag.includes(tg) || tg.includes(tag))
-        );
+        const artistTags = genreMap[t.artists?.[0]?.name] ?? [];
+        if (artistTags.length > 0) {
+          return artistTags.some((tag) =>
+            trackGenres.some((tg) => tag.includes(tg) || tg.includes(tag))
+          );
+        }
+        // No Last.fm tags — fall back to audio-feature inference
+        const cat = inferGenreCategory(featMap[t.id]);
+        if (!cat) return true; // truly no data, include
+        return trackGenres.some((tg) => cat.includes(tg) || tg.includes(cat));
       });
     };
 
@@ -360,14 +363,18 @@ export default function App() {
         });
 
         const enriched = (spotifyTracks ?? []).filter(Boolean);
-        const genreFiltered = await applyGenreFilter(enriched);
+        const genreFiltered = await applyGenreFilter(enriched, featMap);
+
+        // Drop tracks with unknown key or BPM — they can't be mixed harmonically
+        const validMatches = genreFiltered.filter((t) => {
+          const feat = featMap[t.id];
+          return feat && feat.key !== -1 && feat.tempo > 0;
+        });
 
         setMatches(
-          genreFiltered.map((t) => {
-            const feat = featMap[t.id] ?? null;
-            const bpmDiff = feat?.tempo != null
-              ? Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10
-              : null;
+          validMatches.map((t) => {
+            const feat = featMap[t.id];
+            const bpmDiff = Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10;
             return { track: t, features: feat, bpmDiff, isHalfDouble: false };
           }),
         );
@@ -391,24 +398,24 @@ export default function App() {
 
       const candidates = tracks.filter((t) => t && t.id !== selectedTrack.id).slice(0, 200);
 
-      // Genre filter first (Last.fm, parallel)
-      const genreCandidates = await applyGenreFilter(candidates);
-
-      if (!hasAudio) {
-        setMatches(genreCandidates.map((track) => ({ track, features: null, bpmDiff: null, isHalfDouble: false })));
-        return;
-      }
-
-      // Fetch ReccoBeats features for genre-filtered tracks only
+      // Fetch ReccoBeats features first — needed for inference fallback in genre filter
       const featMap = {};
       const BATCH = 40;
-      for (let i = 0; i < genreCandidates.length; i += BATCH) {
-        const ids = genreCandidates.slice(i, i + BATCH).map((t) => t.id);
+      for (let i = 0; i < candidates.length; i += BATCH) {
+        const ids = candidates.slice(i, i + BATCH).map((t) => t.id);
         const feats = await reccoFeatures(ids);
         feats.forEach((f) => {
           const sid = spotifyIdFromHref(f.href);
           if (sid) featMap[sid] = f;
         });
+      }
+
+      // Genre filter (Last.fm + inference fallback via featMap)
+      const genreCandidates = await applyGenreFilter(candidates, featMap);
+
+      if (!hasAudio) {
+        setMatches(genreCandidates.map((track) => ({ track, features: null, bpmDiff: null, isHalfDouble: false })));
+        return;
       }
 
       const matched = [];
