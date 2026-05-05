@@ -261,7 +261,12 @@ export default function App() {
             e.status = r.status;
             throw e;
           }
-          const items = (data.items ?? []).map((i) => i.track).filter(Boolean);
+          if (!Array.isArray(data.items)) {
+            throw new Error(
+              `unexpected shape — items type: ${typeof data.items}, top-level keys: ${JSON.stringify(Object.keys(data ?? {}).slice(0, 10))}`
+            );
+          }
+          const items = data.items.map((i) => i.track).filter(Boolean);
           all = all.concat(items);
           if (items.length < 50 || !data.next) break;
           offset += 50;
