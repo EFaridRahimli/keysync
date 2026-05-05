@@ -261,8 +261,9 @@ export default function App() {
             e.status = r.status;
             throw e;
           }
+          // Spotify's current API uses "item" key; "track" is the deprecated name
           const items = (data.items ?? [])
-            .map((i) => i.track ?? (i.id ? i : null))
+            .map((i) => i.item ?? i.track ?? (i.id ? i : null))
             .filter(Boolean);
           all = all.concat(items);
           if (items.length < 50 || !data.next) break;
@@ -623,7 +624,7 @@ export default function App() {
                     <option value="">Choose a playlist…</option>
                     {playlists.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} — {p.owner?.display_name ?? p.owner?.id ?? "?"} ({p.tracks?.total ?? "?"} tracks)
+                        {p.name} — {p.owner?.display_name ?? p.owner?.id ?? "?"} ({p.items?.total ?? p.tracks?.total ?? "?"} tracks)
                       </option>
                     ))}
                   </select>
