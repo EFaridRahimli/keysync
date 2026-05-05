@@ -12,7 +12,7 @@ export default async function handler(req, res) {
     // First page: fetch full playlist to get tracks.items inline (avoids /tracks 403)
     // Subsequent pages: use the dedicated tracks endpoint
     const url = isFirstPage
-      ? `https://api.spotify.com/v1/playlists/${playlistId}?market=from_token&additional_types=track`
+      ? `https://api.spotify.com/v1/playlists/${playlistId}?market=from_token`
       : `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50&offset=${offset}&market=from_token`;
 
     const r = await fetch(url, {

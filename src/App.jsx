@@ -270,7 +270,10 @@ export default function App() {
           if (data._debug) {
             throw new Error(`proxy debug: ${JSON.stringify(data._debug)}`);
           }
-          const items = data.items.map((i) => i.track).filter(Boolean);
+          // Items may be PlaylistTrackObjects {track:…} or bare TrackObjects
+          const items = data.items
+            .map((i) => i.track ?? (i.id ? i : null))
+            .filter(Boolean);
           all = all.concat(items);
           if (items.length < 50 || !data.next) break;
           offset += 50;
