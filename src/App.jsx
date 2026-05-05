@@ -180,7 +180,7 @@ export default function App() {
   const [bpmTolerance, setBpmTolerance] = useState(5);
   const [matchSource, setMatchSource] = useState("recommendations");
   const [trackGenres, setTrackGenres] = useState([]);
-  const [filterByGenre, setFilterByGenre] = useState(false);
+  const [filterByGenre, setFilterByGenre] = useState(true);
   const [playlists, setPlaylists] = useState([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState(null);
   const [playlistTracks, setPlaylistTracks] = useState([]);
@@ -368,9 +368,12 @@ export default function App() {
         const data = await spotifyGet(`/artists?ids=${batch.join(",")}`, token).catch(() => null);
         (data?.artists ?? []).forEach((a) => { if (a) genreMap[a.id] = a.genres ?? []; });
       }
+      // Substring match so "house" matches "deep house", "tech house", etc.
       return list.filter((t) => {
         const g = genreMap[t.artists?.[0]?.id] ?? [];
-        return g.some((genre) => trackGenres.includes(genre));
+        return g.some((genre) =>
+          trackGenres.some((tg) => genre.includes(tg) || tg.includes(genre))
+        );
       });
     };
 
@@ -750,7 +753,7 @@ export default function App() {
                     onChange={(e) => setFilterByGenre(e.target.checked)}
                     style={{ accentColor: "#1db954" }}
                   />
-                  Same genre only
+                  Match genre (house → house, techno → techno…)
                   {trackGenres.length > 0 && (
                     <span style={{ color: "#9e9890", fontSize: "11px", marginLeft: "6px" }}>
                       ({trackGenres.slice(0, 2).join(", ")}{trackGenres.length > 2 ? "…" : ""})
