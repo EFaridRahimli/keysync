@@ -633,7 +633,7 @@ export default function App() {
                     <option value="">Choose a playlist…</option>
                     {playlists.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} — {p.owner?.display_name ?? p.owner?.id ?? "?"} (tracks:{JSON.stringify(p.tracks)})
+                        {p.name} — {p.owner?.display_name ?? p.owner?.id ?? "?"} ({p.tracks?.total ?? "?"} tracks)
                       </option>
                     ))}
                   </select>
@@ -648,7 +648,7 @@ export default function App() {
             )}
             {selectedPlaylist && !playlistLoading && playlistTracks.length === 0 && !playlistError && (
               <p style={{ fontSize: "12px", color: "#b0a898", margin: 0 }}>
-                No tracks found — this may be a Spotify-generated playlist. Try selecting one you created yourself.
+                No tracks found. Open Spotify and make sure this playlist has songs added to it, then come back.
               </p>
             )}
             {selectedPlaylist && !playlistLoading && playlistTracks.length > 0 && (
