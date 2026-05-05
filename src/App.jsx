@@ -341,8 +341,7 @@ export default function App() {
         if (!cat) return true;
         return trackGenres.some((tg) => tagsMatch(cat, tg));
       });
-      // Safety net: never return empty — prefer unfiltered over no results
-      return filtered.length > 0 ? filtered : list;
+      return filtered;
     };
 
     try {
@@ -375,19 +374,27 @@ export default function App() {
         const enriched = (spotifyTracks ?? []).filter(Boolean);
         const genreFiltered = await applyGenreFilter(enriched, featMap);
 
-        // Drop tracks with unknown key or BPM — they can't be mixed harmonically
-        const validMatches = genreFiltered.filter((t) => {
+        // Apply same key + BPM filters as library/top modes
+        const validMatches = [];
+        for (const t of genreFiltered) {
           const feat = featMap[t.id];
-          return feat && feat.key !== -1 && feat.tempo > 0;
-        });
-
-        setMatches(
-          validMatches.map((t) => {
-            const feat = featMap[t.id];
-            const bpmDiff = Math.round(Math.abs(feat.tempo - audioFeatures.tempo) * 10) / 10;
-            return { track: t, features: feat, bpmDiff, isHalfDouble: false };
-          }),
-        );
+          if (!feat || feat.key === -1 || feat.tempo <= 0) continue;
+          if (hasAudio && feat.key !== audioFeatures.key) continue;
+          if (hasAudio && feat.mode !== audioFeatures.mode) continue;
+          const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
+          const halfDouble =
+            Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
+            Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
+          if (!hasAudio || bpmDiff <= bpmTolerance || halfDouble) {
+            validMatches.push({
+              track: t, features: feat,
+              bpmDiff: Math.round(bpmDiff * 10) / 10,
+              isHalfDouble: hasAudio && bpmDiff > bpmTolerance && halfDouble,
+            });
+          }
+        }
+        validMatches.sort((a, b) => a.bpmDiff - b.bpmDiff);
+        setMatches(validMatches);
         return;
       }
 
