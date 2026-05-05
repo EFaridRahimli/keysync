@@ -37,16 +37,6 @@ function isCamelotCompatible(sourceKey, sourceMode, candidateKey, candidateMode)
   const next = source.number === 12 ? 1 : source.number + 1;
   return source.letter === candidate.letter && (candidate.number === previous || candidate.number === next);
 }
-function camelotCompatibleKeyModes(sourceKey, sourceMode) {
-  const pairs = [];
-  for (let key = 0; key < KEY_NAMES.length; key += 1) {
-    for (const mode of [0, 1]) {
-      if (isCamelotCompatible(sourceKey, sourceMode, key, mode)) pairs.push({ key, mode });
-    }
-  }
-  return pairs;
-}
-
 // ─── PKCE helpers ─────────────────────────────────────────────────────────────
 function generateCodeVerifier() {
   const array = new Uint8Array(64);
@@ -407,38 +397,14 @@ export default function App() {
 
     try {
       if (matchSource === "recommendations") {
-        const baseParams = () => new URLSearchParams({
+        const params = new URLSearchParams({
           action: "recs",
           spotifyId: selectedTrack.id,
-          size: 50,
+          size: 100,
         });
-        const paramVariants = [baseParams()];
-
-        if (hasAudio) {
-          for (const { key, mode } of camelotCompatibleKeyModes(audioFeatures.key, audioFeatures.mode)) {
-            const params = baseParams();
-            params.set("key", key);
-            params.set("mode", mode);
-            paramVariants.push(params);
-          }
-
-          if (audioFeatures.tempo > 0) {
-            const params = baseParams();
-            params.set("tempo", Math.round(audioFeatures.tempo));
-            paramVariants.push(params);
-          }
-        }
-
-        const recResponses = await Promise.all(
-          paramVariants.map((params) =>
-            fetch(`/api/reccobeats?${params}`)
-              .then((r) => (r.ok ? r.json() : { content: [] }))
-              .catch(() => ({ content: [] })),
-          ),
-        );
+        const recData = await fetch(`/api/reccobeats?${params}`).then((r) => r.json());
         const seenReccoIds = new Set([selectedTrack.id]);
-        const reccoTracks = recResponses
-          .flatMap((data) => data.content ?? [])
+        const reccoTracks = (recData.content ?? [])
           .filter((t) => {
             const id = spotifyIdFromHref(t.href) ?? t.id;
             if (!id || seenReccoIds.has(id)) return false;

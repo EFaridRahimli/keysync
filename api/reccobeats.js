@@ -16,17 +16,20 @@ export default async function handler(req, res) {
     }
 
     if (action === "recs") {
-      const { spotifyId, key, mode, tempo, size } = req.query;
+      const { spotifyId, key, mode, tempo, size, strict } = req.query;
       const params = new URLSearchParams({ seeds: spotifyId, size: size || 50 });
-      if (key !== undefined && key !== "-1") params.set("key", key);
-      if (mode !== undefined) params.set("mode", mode);
-      if (tempo && parseFloat(tempo) > 0)
-        params.set("tempo", Math.round(parseFloat(tempo)));
+      if (strict === "1") {
+        if (key !== undefined && key !== "-1") params.set("key", key);
+        if (mode !== undefined) params.set("mode", mode);
+        if (tempo && parseFloat(tempo) > 0)
+          params.set("tempo", Math.round(parseFloat(tempo)));
+      }
       const r = await fetch(
         `https://api.reccobeats.com/v1/track/recommendation?${params}`,
         { headers },
       );
-      return res.status(200).json(await r.json());
+      const data = await r.json().catch(() => ({}));
+      return res.status(r.status).json(data);
     }
 
     return res.status(400).json({ error: "invalid action" });
