@@ -9,7 +9,7 @@ export default async function handler(req, res) {
   try {
     const isFirstPage = !offset || offset === "0";
     const url = isFirstPage
-      ? `https://api.spotify.com/v1/playlists/${playlistId}?fields=tracks(items(track),next,total,offset,limit)`
+      ? `https://api.spotify.com/v1/playlists/${playlistId}`
       : `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50&offset=${offset}`;
 
     const r = await fetch(url, {
