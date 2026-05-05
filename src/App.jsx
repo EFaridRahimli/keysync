@@ -176,6 +176,33 @@ function genreTagsCompatible(sourceTags, candidateTags) {
   }
   return candidateTags.some((tag) => sourceTags.some((source) => tagsMatch(tag, source)));
 }
+function spotifyGenreSearchTerms(tags) {
+  const families = genreFamiliesFor(tags);
+  const terms = new Set();
+  if (families.has("hip-hop")) ["hip-hop", "rap", "trap"].forEach((term) => terms.add(term));
+  if (families.has("r-and-b")) ["r-n-b", "soul"].forEach((term) => terms.add(term));
+  if (families.has("pop")) terms.add("pop");
+  if (families.has("rock")) terms.add("rock");
+  if (families.has("electronic")) terms.add("electronic");
+  if (families.has("house")) terms.add("house");
+  if (families.has("techno")) terms.add("techno");
+  if (families.has("trance")) terms.add("trance");
+  if (families.has("drum-and-bass")) terms.add("drum-and-bass");
+  if (families.has("dubstep")) terms.add("dubstep");
+  if (families.has("latin")) terms.add("latin");
+  if (families.has("reggae")) terms.add("reggae");
+  if (families.has("country")) terms.add("country");
+  if (families.has("folk")) terms.add("folk");
+  if (families.has("jazz")) terms.add("jazz");
+  if (families.has("classical")) terms.add("classical");
+  if (families.has("metal")) terms.add("metal");
+  if (families.has("punk")) terms.add("punk");
+  if (families.has("funk-disco")) ["funk", "disco"].forEach((term) => terms.add(term));
+  tags.slice(0, 4).map(normGenre).forEach((tag) => {
+    if (tag && !NOISE_TAGS.has(tag)) terms.add(tag.replace(/\s+/g, "-"));
+  });
+  return [...terms].slice(0, 6);
+}
 
 async function lastfmGenres(artistName) {
   if (!artistName) return [];
@@ -441,6 +468,59 @@ export default function App() {
       });
       return filtered;
     };
+    const buildFeatureMap = async (tracks) => {
+      const featMap = {};
+      const BATCH = 40;
+      for (let i = 0; i < tracks.length; i += BATCH) {
+        const ids = tracks.slice(i, i + BATCH).map((t) => t.id).filter(Boolean);
+        const feats = await reccoFeatures(ids);
+        feats.forEach((f) => {
+          const sid = spotifyIdFromHref(f.href);
+          if (sid) featMap[sid] = f;
+        });
+      }
+      return featMap;
+    };
+    const buildHarmonicMatches = (tracks, featMap) => {
+      const result = [];
+      for (const track of tracks) {
+        const feat = featMap[track.id];
+        if (!feat || feat.key === -1 || feat.tempo <= 0) continue;
+        if (hasAudio && !isCamelotCompatible(audioFeatures.key, audioFeatures.mode, feat.key, feat.mode)) continue;
+        const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
+        const halfDouble =
+          Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
+          Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
+        if (!hasAudio || bpmDiff <= bpmTolerance || halfDouble) {
+          result.push({
+            track,
+            features: feat,
+            bpmDiff: Math.round(bpmDiff * 10) / 10,
+            isHalfDouble: hasAudio && bpmDiff > bpmTolerance && halfDouble,
+          });
+        }
+      }
+      result.sort((a, b) => a.bpmDiff - b.bpmDiff);
+      return result;
+    };
+    const searchGenreTracks = async () => {
+      const terms = spotifyGenreSearchTerms(trackGenres);
+      const seen = new Set([selectedTrack.id]);
+      const tracks = [];
+      for (const term of terms) {
+        for (const offset of [0, 50]) {
+          const query = encodeURIComponent(`genre:${term}`);
+          const data = await spotifyGet(`/search?q=${query}&type=track&limit=50&offset=${offset}`, token)
+            .catch(() => ({ tracks: { items: [] } }));
+          for (const track of data.tracks?.items ?? []) {
+            if (!track?.id || seen.has(track.id)) continue;
+            seen.add(track.id);
+            tracks.push(track);
+          }
+        }
+      }
+      return tracks;
+    };
 
     try {
       if (matchSource === "recommendations") {
@@ -478,25 +558,16 @@ export default function App() {
         const enriched = (spotifyTracks ?? []).filter(Boolean);
         const genreFiltered = await applyGenreFilter(enriched, featMap);
 
-        const validMatches = [];
-        for (const t of genreFiltered) {
-          const feat = featMap[t.id];
-          if (!feat || feat.key === -1 || feat.tempo <= 0) continue;
-          if (hasAudio && !isCamelotCompatible(audioFeatures.key, audioFeatures.mode, feat.key, feat.mode)) continue;
-          const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
-          const halfDouble =
-            Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
-            Math.abs(feat.tempo * 2 - audioFeatures.tempo) <= bpmTolerance;
-          if (!hasAudio || bpmDiff <= bpmTolerance || halfDouble) {
-            validMatches.push({
-              track: t,
-              features: feat,
-              bpmDiff: Math.round(bpmDiff * 10) / 10,
-              isHalfDouble: hasAudio && bpmDiff > bpmTolerance && halfDouble,
-            });
-          }
+        let validMatches = buildHarmonicMatches(genreFiltered, featMap);
+        if (validMatches.length === 0 && hasAudio && trackGenres.length > 0) {
+          const genreSearchTracks = await searchGenreTracks();
+          const searchFeatMap = await buildFeatureMap(genreSearchTracks);
+          const searchGenreFiltered = await applyGenreFilter(genreSearchTracks, searchFeatMap);
+          validMatches = buildHarmonicMatches(
+            searchGenreFiltered.length > 0 ? searchGenreFiltered : genreSearchTracks,
+            searchFeatMap,
+          );
         }
-        validMatches.sort((a, b) => a.bpmDiff - b.bpmDiff);
         setMatches(validMatches);
         return;
       }
@@ -519,16 +590,7 @@ export default function App() {
       const candidates = tracks.filter((t) => t && t.id !== selectedTrack.id).slice(0, 200);
 
       // Fetch ReccoBeats features first — needed for inference fallback in genre filter
-      const featMap = {};
-      const BATCH = 40;
-      for (let i = 0; i < candidates.length; i += BATCH) {
-        const ids = candidates.slice(i, i + BATCH).map((t) => t.id);
-        const feats = await reccoFeatures(ids);
-        feats.forEach((f) => {
-          const sid = spotifyIdFromHref(f.href);
-          if (sid) featMap[sid] = f;
-        });
-      }
+      const featMap = await buildFeatureMap(candidates);
 
       // Genre filter (Last.fm + inference fallback via featMap)
       const genreCandidates = await applyGenreFilter(candidates, featMap);
