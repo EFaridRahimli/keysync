@@ -326,19 +326,19 @@ export default function App() {
       setError("");
       setLoading(true);
       try {
-        const artistId = track.artists?.[0]?.id;
-        const [[feat], artistData] = await Promise.all([
+        const artistIds = (track.artists ?? []).map((a) => a.id).filter(Boolean).slice(0, 5);
+        const [featResult, ...artists] = await Promise.all([
           reccoFeatures([track.id]),
-          artistId
-            ? spotifyGet(`/artists/${artistId}`, token).catch(() => null)
-            : Promise.resolve(null),
+          ...artistIds.map((id) => spotifyGet(`/artists/${id}`, token).catch(() => null)),
         ]);
+        const feat = featResult?.[0];
         setAudioFeatures(
           feat
             ? { key: feat.key, mode: feat.mode, tempo: feat.tempo }
             : { key: -1, mode: 0, tempo: 0 },
         );
-        setTrackGenres(artistData?.genres ?? []);
+        // Collect genres from all artists on the track for better coverage
+        setTrackGenres([...new Set(artists.flatMap((a) => a?.genres ?? []))]);
       } catch (e) {
         setError("Couldn't fetch audio features: " + e.message);
         setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
@@ -361,16 +361,19 @@ export default function App() {
 
     const applyGenreFilter = async (list) => {
       if (!filterByGenre || !trackGenres.length) return list;
-      const artistIds = [...new Set(list.map((t) => t.artists?.[0]?.id).filter(Boolean))];
+      // Collect IDs from ALL artists on every track (not just primary)
+      const artistIds = [...new Set(
+        list.flatMap((t) => (t.artists ?? []).map((a) => a.id)).filter(Boolean)
+      )];
       const genreMap = {};
       for (let i = 0; i < artistIds.length; i += 50) {
         const batch = artistIds.slice(i, i + 50);
         const data = await spotifyGet(`/artists?ids=${batch.join(",")}`, token).catch(() => null);
         (data?.artists ?? []).forEach((a) => { if (a) genreMap[a.id] = a.genres ?? []; });
       }
-      // Substring match so "house" matches "deep house", "tech house", etc.
+      // Substring match across ALL artists: "house" matches "deep house", "tech house", etc.
       return list.filter((t) => {
-        const g = genreMap[t.artists?.[0]?.id] ?? [];
+        const g = (t.artists ?? []).flatMap((a) => genreMap[a.id] ?? []);
         return g.some((genre) =>
           trackGenres.some((tg) => genre.includes(tg) || tg.includes(genre))
         );
@@ -753,10 +756,14 @@ export default function App() {
                     onChange={(e) => setFilterByGenre(e.target.checked)}
                     style={{ accentColor: "#1db954" }}
                   />
-                  Match genre (house → house, techno → techno…)
-                  {trackGenres.length > 0 && (
+                  Match genre
+                  {trackGenres.length > 0 ? (
                     <span style={{ color: "#9e9890", fontSize: "11px", marginLeft: "6px" }}>
-                      ({trackGenres.slice(0, 2).join(", ")}{trackGenres.length > 2 ? "…" : ""})
+                      ({trackGenres.slice(0, 3).join(", ")}{trackGenres.length > 3 ? "…" : ""})
+                    </span>
+                  ) : (
+                    <span style={{ color: "#b84c4c", fontSize: "11px", marginLeft: "6px" }}>
+                      (no genre data — filter won't apply)
                     </span>
                   )}
                 </label>
