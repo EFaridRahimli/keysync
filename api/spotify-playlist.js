@@ -28,22 +28,26 @@ export default async function handler(req, res) {
     }
 
     if (isFirstPage) {
-      const tracksPage = data.tracks;
-      if (!tracksPage || !Array.isArray(tracksPage.items)) {
-        // Return a readable debug payload so the client error shows us the shape
+      // Spotify returns tracks under data.tracks normally, but under data directly
+      // when additional_types=track is passed — handle both shapes.
+      const page = data.tracks ?? data;
+      if (!Array.isArray(page.items)) {
         return res.status(200).json({
           items: [],
           next: null,
           total: 0,
           _debug: {
-            msg: "tracks field missing or items not array",
-            tracksType: typeof tracksPage,
-            tracksKeys: tracksPage ? Object.keys(tracksPage) : null,
+            msg: "items not array after fallback",
+            pageKeys: Object.keys(page ?? {}),
             dataKeys: Object.keys(data ?? {}),
           },
         });
       }
-      return res.status(200).json(tracksPage);
+      return res.status(200).json({
+        items: page.items,
+        next: page.next ?? null,
+        total: page.total ?? page.items.length,
+      });
     }
 
     return res.status(200).json(data);
