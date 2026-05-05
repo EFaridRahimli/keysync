@@ -23,6 +23,20 @@ function getCamelot(key, mode) {
   const label = `${KEY_NAMES[key] ?? ""} ${MODE_NAMES[mode] ?? ""}`.trim();
   return CAMELOT[label] ?? "?";
 }
+function getCamelotParts(key, mode) {
+  const code = getCamelot(key, mode);
+  const match = code.match(/^(\d+)([AB])$/);
+  return match ? { number: Number(match[1]), letter: match[2] } : null;
+}
+function isCamelotCompatible(sourceKey, sourceMode, candidateKey, candidateMode) {
+  const source = getCamelotParts(sourceKey, sourceMode);
+  const candidate = getCamelotParts(candidateKey, candidateMode);
+  if (!source || !candidate) return false;
+  if (source.number === candidate.number) return true;
+  const previous = source.number === 1 ? 12 : source.number - 1;
+  const next = source.number === 12 ? 1 : source.number + 1;
+  return source.letter === candidate.letter && (candidate.number === previous || candidate.number === next);
+}
 
 // ─── PKCE helpers ─────────────────────────────────────────────────────────────
 function generateCodeVerifier() {
@@ -118,6 +132,50 @@ const NOISE_TAGS = new Set([
   "seen live","favourites","favourite","love","beautiful","awesome","good","best",
   "amazing","classic","under 2000 listeners","all","my music","music","spotify",
 ]);
+const GENRE_FAMILIES = [
+  ["house", ["house", "uk garage"]],
+  ["techno", ["techno", "minimal"]],
+  ["trance", ["trance"]],
+  ["drum-and-bass", ["drum and bass", "drum n bass", "dnb", "jungle"]],
+  ["dubstep", ["dubstep", "bass music"]],
+  ["hip-hop", ["hip hop", "hip-hop", "rap", "trap"]],
+  ["r-and-b", ["r&b", "rnb", "soul"]],
+  ["rock", ["rock", "grunge", "shoegaze", "post rock"]],
+  ["metal", ["metal", "hardcore"]],
+  ["punk", ["punk", "emo"]],
+  ["country", ["country", "bluegrass", "americana"]],
+  ["folk", ["folk", "singer songwriter"]],
+  ["jazz", ["jazz", "blues"]],
+  ["classical", ["classical", "orchestral", "opera"]],
+  ["latin", ["latin", "reggaeton", "salsa", "bachata"]],
+  ["reggae", ["reggae", "dancehall", "dub"]],
+  ["pop", ["pop", "k-pop", "synthpop"]],
+  ["funk-disco", ["funk", "disco"]],
+];
+function normGenre(s) {
+  return s.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+}
+function tagsMatch(a, b) {
+  const na = normGenre(a), nb = normGenre(b);
+  return na.includes(nb) || nb.includes(na);
+}
+function genreFamiliesFor(tags) {
+  const families = new Set();
+  for (const tag of tags.map(normGenre)) {
+    for (const [family, keywords] of GENRE_FAMILIES) {
+      if (keywords.some((keyword) => tag.includes(keyword))) families.add(family);
+    }
+  }
+  return families;
+}
+function genreTagsCompatible(sourceTags, candidateTags) {
+  const sourceFamilies = genreFamiliesFor(sourceTags);
+  if (sourceFamilies.size > 0) {
+    const candidateFamilies = genreFamiliesFor(candidateTags);
+    return [...sourceFamilies].some((family) => candidateFamilies.has(family));
+  }
+  return candidateTags.some((tag) => sourceTags.some((source) => tagsMatch(tag, source)));
+}
 
 async function lastfmGenres(artistName) {
   if (!artistName) return [];
@@ -322,24 +380,18 @@ export default function App() {
     const hasAudio = audioFeatures.key !== -1;
     const spotifyIdFromHref = (href) => href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
 
-    // Normalize genre strings for comparison: lowercase + collapse hyphens/spaces
-    const norm = (s) => s.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
-    const tagsMatch = (a, b) => { const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na); };
-
     // Genre filter: Last.fm tags primary, audio-feature inference fallback.
-    // Safety net: if every track is filtered out, return the full list so we
-    // never show an empty results page due to an overly strict genre filter.
     const applyGenreFilter = async (list, featMap = {}) => {
       if (!filterByGenre || !trackGenres.length) return list;
       const genreMap = await buildGenreMap(list);
       const filtered = list.filter((t) => {
         const artistTags = genreMap[t.artists?.[0]?.name] ?? [];
         if (artistTags.length > 0) {
-          return artistTags.some((tag) => trackGenres.some((tg) => tagsMatch(tag, tg)));
+          return genreTagsCompatible(trackGenres, artistTags);
         }
         // No Last.fm tags — fall back to audio-feature inference
         const cat = inferGenreCategory(featMap[t.id]);
-        return cat ? trackGenres.some((tg) => tagsMatch(cat, tg)) : false;
+        return cat ? genreTagsCompatible(trackGenres, [cat]) : false;
       });
       return filtered;
     };
@@ -378,7 +430,7 @@ export default function App() {
         for (const t of genreFiltered) {
           const feat = featMap[t.id];
           if (!feat || feat.key === -1 || feat.tempo <= 0) continue;
-          if (hasAudio && (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode)) continue;
+          if (hasAudio && !isCamelotCompatible(audioFeatures.key, audioFeatures.mode, feat.key, feat.mode)) continue;
           const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
           const halfDouble =
             Math.abs(feat.tempo - audioFeatures.tempo * 2) <= bpmTolerance ||
@@ -438,7 +490,7 @@ export default function App() {
       for (const track of genreCandidates) {
         const feat = featMap[track.id];
         if (!feat || feat.key === -1) continue;
-        if (feat.key !== audioFeatures.key || feat.mode !== audioFeatures.mode) continue;
+        if (!isCamelotCompatible(audioFeatures.key, audioFeatures.mode, feat.key, feat.mode)) continue;
         if (!feat.tempo) continue;
         const bpmDiff = Math.abs(feat.tempo - audioFeatures.tempo);
         const halfDouble =
@@ -670,7 +722,7 @@ export default function App() {
               {matches.length} Harmonic Match{matches.length !== 1 ? "es" : ""}
             </h2>
             <p style={styles.cardDesc}>
-              All tracks in{" "}
+              Camelot-compatible with{" "}
               <strong style={{ color: T.text }}>{keyLabel(audioFeatures.key, audioFeatures.mode)}</strong>{" "}
               within ±{bpmTolerance} BPM of{" "}
               <strong style={{ color: T.text }}>{Math.round(audioFeatures.tempo)} BPM</strong>
