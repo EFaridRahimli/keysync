@@ -125,6 +125,7 @@ async function reccoFeatures(spotifyIds) {
 // ─── Last.fm genre lookup ─────────────────────────────────────────────────────
 // Module-level cache so repeated lookups for the same artist skip the network
 const _lfmCache = {};
+const _spotifyArtistGenreCache = {};
 
 // Tags that aren't genres — Last.fm users tag artists with these too
 const NOISE_TAGS = new Set([
@@ -196,12 +197,53 @@ async function lastfmGenres(artistName) {
   }
 }
 
-// Fetch Last.fm genres for every unique primary artist in a track list (parallel)
-async function buildGenreMap(tracks) {
-  const names = [...new Set(tracks.map((t) => t.artists?.[0]?.name).filter(Boolean))];
+async function spotifyArtistGenres(artistIds, token) {
+  const ids = [...new Set(artistIds.filter(Boolean))];
+  const missing = ids.filter((id) => _spotifyArtistGenreCache[id] === undefined);
+  const BATCH = 50;
+
+  for (let i = 0; i < missing.length; i += BATCH) {
+    const batch = missing.slice(i, i + BATCH);
+    try {
+      const data = await spotifyGet(`/artists?ids=${batch.join(",")}`, token);
+      for (const artist of data.artists ?? []) {
+        if (artist?.id) {
+          _spotifyArtistGenreCache[artist.id] = (artist.genres ?? []).map((g) => g.toLowerCase());
+        }
+      }
+      for (const id of batch) {
+        if (_spotifyArtistGenreCache[id] === undefined) _spotifyArtistGenreCache[id] = [];
+      }
+    } catch {
+      for (const id of batch) _spotifyArtistGenreCache[id] = [];
+    }
+  }
+
+  const map = {};
+  for (const id of ids) map[id] = _spotifyArtistGenreCache[id] ?? [];
+  return map;
+}
+
+// Fetch genres for every unique primary artist in a track list (Spotify first, Last.fm fallback).
+async function buildGenreMap(tracks, token) {
+  const primaryArtists = tracks.map((t) => t.artists?.[0]).filter(Boolean);
+  const spotifyMap = await spotifyArtistGenres(primaryArtists.map((artist) => artist.id), token);
+  const names = [
+    ...new Set(
+      primaryArtists
+        .filter((artist) => !artist.id || !(spotifyMap[artist.id]?.length > 0))
+        .map((artist) => artist.name)
+        .filter(Boolean),
+    ),
+  ];
   await Promise.all(names.map(lastfmGenres)); // populates cache
   const map = {};
-  for (const name of names) map[name] = _lfmCache[name.toLowerCase()] ?? [];
+  for (const artist of primaryArtists) {
+    const spotifyGenres = artist.id ? spotifyMap[artist.id] ?? [] : [];
+    map[artist.id ?? artist.name] = spotifyGenres.length > 0
+      ? spotifyGenres
+      : _lfmCache[artist.name?.toLowerCase()] ?? [];
+  }
   return map;
 }
 
@@ -347,16 +389,20 @@ export default function App() {
       setError(""); setLoading(true);
       try {
         const artistName = track.artists?.[0]?.name;
-        // Fetch audio features and Last.fm tags in parallel
-        const [featResult, lfmTags] = await Promise.all([
+        const artistId = track.artists?.[0]?.id;
+        // Fetch audio features and artist genres in parallel.
+        const [featResult, spotifyGenres, lfmTags] = await Promise.all([
           reccoFeatures([track.id]),
+          spotifyArtistGenres([artistId], token).then((genres) => genres[artistId] ?? []),
           lastfmGenres(artistName),
         ]);
         const feat = featResult?.[0];
         setAudioFeatures(
           feat ? { key: feat.key, mode: feat.mode, tempo: feat.tempo } : { key: -1, mode: 0, tempo: 0 },
         );
-        if (lfmTags.length > 0) {
+        if (spotifyGenres.length > 0) {
+          setTrackGenres(spotifyGenres);
+        } else if (lfmTags.length > 0) {
           setTrackGenres(lfmTags);
         } else {
           // Fall back to audio-feature inference when Last.fm has no tags
@@ -379,12 +425,13 @@ export default function App() {
     const hasAudio = audioFeatures.key !== -1;
     const spotifyIdFromHref = (href) => href?.match(/track\/([A-Za-z0-9]+)/)?.[1] ?? null;
 
-    // Genre filter: Last.fm tags primary, audio-feature inference fallback.
+    // Genre filter: Spotify artist genres primary, Last.fm tags secondary, audio-feature inference fallback.
     const applyGenreFilter = async (list, featMap = {}) => {
       if (!filterByGenre || !trackGenres.length) return list;
-      const genreMap = await buildGenreMap(list);
+      const genreMap = await buildGenreMap(list, token);
       const filtered = list.filter((t) => {
-        const artistTags = genreMap[t.artists?.[0]?.name] ?? [];
+        const artist = t.artists?.[0];
+        const artistTags = genreMap[artist?.id ?? artist?.name] ?? [];
         if (artistTags.length > 0) {
           return genreTagsCompatible(trackGenres, artistTags);
         }
