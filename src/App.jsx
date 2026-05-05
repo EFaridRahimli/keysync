@@ -117,6 +117,7 @@ async function exchangeCodeForToken(code) {
     );
   }
   localStorage.removeItem("pkce_verifier");
+  localStorage.setItem("spotify_granted_scopes", data.scope ?? "");
   return data.access_token;
 }
 
@@ -248,16 +249,28 @@ export default function App() {
     (async () => {
       try {
         let all = [];
-        let next = `/playlists/${selectedPlaylist.id}/tracks?limit=50`;
-        while (next && all.length < 300) {
-          const data = await spotifyGet(next, token);
-          all = all.concat(data.items.map((i) => i.track).filter(Boolean));
-          next = data.next ? data.next.replace("https://api.spotify.com/v1", "") : null;
+        let offset = 0;
+        while (all.length < 300) {
+          const r = await fetch(
+            `/api/spotify-playlist?playlistId=${selectedPlaylist.id}&offset=${offset}`,
+            { headers: { Authorization: `Bearer ${token.trim()}` } },
+          );
+          const data = await r.json();
+          if (!r.ok) {
+            const e = new Error(data?.error?.message ?? `HTTP ${r.status}`);
+            e.status = r.status;
+            throw e;
+          }
+          const items = (data.items ?? []).map((i) => i.track).filter(Boolean);
+          all = all.concat(items);
+          if (items.length < 50 || !data.next) break;
+          offset += 50;
         }
         if (!cancelled) setPlaylistTracks(all);
       } catch (e) {
         if (!cancelled) {
-          setPlaylistError(`Error ${e.status ?? "?"}: ${e.message} (playlist: ${selectedPlaylist.id})`);
+          const granted = localStorage.getItem("spotify_granted_scopes") ?? "unknown";
+          setPlaylistError(`Error ${e.status ?? "?"}: ${e.message} | granted scopes: ${granted}`);
         }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
