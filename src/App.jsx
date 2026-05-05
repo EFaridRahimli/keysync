@@ -261,17 +261,7 @@ export default function App() {
             e.status = r.status;
             throw e;
           }
-          if (!Array.isArray(data.items)) {
-            const dbg = data._debug ? ` | proxy: ${JSON.stringify(data._debug)}` : "";
-            throw new Error(
-              `shape err — items type: ${typeof data.items}, keys: ${JSON.stringify(Object.keys(data ?? {}).slice(0, 10))}${dbg}`
-            );
-          }
-          if (data._debug) {
-            throw new Error(`proxy debug: ${JSON.stringify(data._debug)}`);
-          }
-          // Items may be PlaylistTrackObjects {track:…} or bare TrackObjects
-          const items = data.items
+          const items = (data.items ?? [])
             .map((i) => i.track ?? (i.id ? i : null))
             .filter(Boolean);
           all = all.concat(items);
