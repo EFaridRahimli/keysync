@@ -346,7 +346,7 @@ export default function App() {
         setLoading(false);
       }
     },
-    [],
+    [token],
   );
 
   const findMatches = useCallback(async () => {
@@ -699,15 +699,14 @@ export default function App() {
                   <span style={styles.badge}>
                     ⚡ {audioFeatures.tempo > 0 ? `${Math.round(audioFeatures.tempo)} BPM` : "BPM unknown"}
                   </span>
-                  <span
-                    style={{
-                      ...styles.badge,
-                      background: "#daeee3",
-                      color: "#1a7a42",
-                    }}
-                  >
+                  <span style={{ ...styles.badge, background: "rgba(218,238,227,0.7)", color: "#1a7a42" }}>
                     🎡 {getCamelot(audioFeatures.key, audioFeatures.mode)}
                   </span>
+                  {trackGenres.length > 0 && (
+                    <span style={{ ...styles.badge, background: "rgba(220,225,245,0.7)", color: "#3a4a8a" }}>
+                      {trackGenres.slice(0, 3).join(" · ")}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
