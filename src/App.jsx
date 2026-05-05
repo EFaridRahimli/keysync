@@ -267,6 +267,9 @@ export default function App() {
               `shape err — items type: ${typeof data.items}, keys: ${JSON.stringify(Object.keys(data ?? {}).slice(0, 10))}${dbg}`
             );
           }
+          if (data._debug) {
+            throw new Error(`proxy debug: ${JSON.stringify(data._debug)}`);
+          }
           const items = data.items.map((i) => i.track).filter(Boolean);
           all = all.concat(items);
           if (items.length < 50 || !data.next) break;
