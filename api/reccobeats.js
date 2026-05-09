@@ -12,11 +12,13 @@ export default async function handler(req, res) {
         `https://api.reccobeats.com/v1/audio-features?${params}`,
         { headers },
       );
-      return res.status(200).json(await r.json());
+      const data = await r.json().catch(() => ({}));
+      return res.status(r.status).json(data);
     }
 
     if (action === "recs") {
       const { spotifyId, key, mode, tempo, size, strict } = req.query;
+      if (!spotifyId) return res.status(400).json({ error: "spotifyId required" });
       const params = new URLSearchParams({ seeds: spotifyId, size: size || 50 });
       if (strict === "1") {
         if (key !== undefined && key !== "-1") params.set("key", key);

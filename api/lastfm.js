@@ -12,7 +12,8 @@ export default async function handler(req, res) {
     const r = await fetch(url, {
       headers: { "User-Agent": "KeySync/1.0 (erahimlif@gmail.com)" },
     });
-    return res.status(200).json(await r.json());
+    const data = await r.json().catch(() => ({}));
+    return res.status(r.status).json(data);
   } catch (e) {
     res.status(502).json({ error: e.message });
   }

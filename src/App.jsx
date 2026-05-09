@@ -76,6 +76,18 @@ async function exchangeCodeForToken(code) {
   return data.access_token;
 }
 
+let authExchangePromise = null;
+let authExchangeCode = "";
+function exchangeCodeForTokenOnce(code) {
+  if (authExchangeCode !== code || !authExchangePromise) {
+    authExchangeCode = code;
+    authExchangePromise = exchangeCodeForToken(code).finally(() => {
+      authExchangePromise = null;
+    });
+  }
+  return authExchangePromise;
+}
+
 async function spotifyGet(endpoint, token) {
   const res = await fetch(`https://api.spotify.com/v1${endpoint}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -114,10 +126,14 @@ async function reccoFeatures(spotifyIds) {
       const params = new URLSearchParams();
       spotifyIds.slice(i, i + BATCH).forEach((id) => params.append("ids", id));
       const res = await fetch(`/api/reccobeats?action=features&${params}`);
-      if (!res.ok) continue;
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error?.message ?? data.error ?? `Audio features failed (${res.status})`);
+      }
       results.push(...(data.content ?? []));
-    } catch { /* skip failed batch */ }
+    } catch (e) {
+      throw new Error(`Audio features lookup failed: ${e.message}`, { cause: e });
+    }
   }
   return results;
 }
@@ -133,6 +149,7 @@ const NOISE_TAGS = new Set([
   "amazing","classic","under 2000 listeners","all","my music","music","spotify",
 ]);
 const GENRE_FAMILIES = [
+  ["electronic", ["electronic", "electronica", "edm", "dance", "idm", "electro"]],
   ["house", ["house", "uk garage"]],
   ["techno", ["techno", "minimal"]],
   ["trance", ["trance"]],
@@ -241,7 +258,8 @@ async function spotifyArtistGenres(artistIds, token) {
       for (const id of batch) {
         if (_spotifyArtistGenreCache[id] === undefined) _spotifyArtistGenreCache[id] = [];
       }
-    } catch {
+    } catch (e) {
+      if (e.status === 401) throw e;
       for (const id of batch) _spotifyArtistGenreCache[id] = [];
     }
   }
@@ -290,6 +308,11 @@ function inferGenreCategory(feat) {
   return null;
 }
 
+function getInitialAuthError() {
+  const errorParam = new URLSearchParams(window.location.search).get("error");
+  return errorParam ? `Spotify login failed: ${errorParam}` : "";
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("spotify_token") ?? "");
@@ -301,7 +324,7 @@ export default function App() {
   const [matchAttempted, setMatchAttempted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [matchLoading, setMatchLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(getInitialAuthError);
   const [bpmTolerance, setBpmTolerance] = useState(5);
   const [matchSource, setMatchSource] = useState("recommendations");
   const [trackGenres, setTrackGenres] = useState([]);
@@ -312,32 +335,37 @@ export default function App() {
   const [playlistLoading, setPlaylistLoading] = useState(false);
   const [playlistError, setPlaylistError] = useState("");
 
+  const logout = useCallback(() => {
+    localStorage.removeItem("spotify_token");
+    setToken(""); setSelectedTrack(null); setAudioFeatures(null);
+    setMatches([]); setMatchAttempted(false); setSearchResults([]); setTrackGenres([]);
+    setPlaylists([]); setSelectedPlaylist(null); setPlaylistTracks([]); setPlaylistError("");
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
     const errorParam = params.get("error");
     if (errorParam) {
-      setError("Spotify login failed: " + errorParam);
       window.history.replaceState(null, "", window.location.pathname);
       return;
     }
     if (code) {
       window.history.replaceState(null, "", window.location.pathname);
-      let cancelled = false;
-      exchangeCodeForToken(code).then((t) => {
-        if (cancelled) return;
+      exchangeCodeForTokenOnce(code).then((t) => {
         localStorage.setItem("spotify_token", t);
         setToken(t);
-      }).catch((e) => { if (!cancelled) setError(e.message); });
-      return () => { cancelled = true; };
+      }).catch((e) => { setError(e.message); });
     }
   }, []);
 
   useEffect(() => {
     if (!token || playlists.length > 0) return;
     let cancelled = false;
-    setPlaylistLoading(true);
     (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      setPlaylistLoading(true);
       try {
         let all = [], next = `/me/playlists?limit=50`;
         while (next && all.length < 200) {
@@ -347,20 +375,32 @@ export default function App() {
         }
         if (!cancelled) setPlaylists(all);
       } catch (e) {
-        if (!cancelled) setPlaylistError(`List error ${e.status ?? "?"}: ${e.message}`);
+        if (!cancelled) {
+          if (e.status === 401) {
+            logout();
+            return;
+          }
+          if (e.status === 403) {
+            setPlaylistError("reauth");
+            return;
+          }
+          setPlaylistError(`List error ${e.status ?? "?"}: ${e.message}`);
+        }
       } finally {
         if (!cancelled) setPlaylistLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [token, playlists.length]);
+  }, [token, playlists.length, logout]);
 
   useEffect(() => {
     if (!selectedPlaylist || !token) return;
     let cancelled = false;
-    setPlaylistLoading(true);
-    setPlaylistTracks([]);
     (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      setPlaylistLoading(true);
+      setPlaylistTracks([]);
       try {
         let all = [], offset = 0;
         while (all.length < 300) {
@@ -378,6 +418,14 @@ export default function App() {
         if (!cancelled) setPlaylistTracks(all);
       } catch (e) {
         if (!cancelled) {
+          if (e.status === 401) {
+            logout();
+            return;
+          }
+          if (e.status === 403) {
+            setPlaylistError("reauth");
+            return;
+          }
           const granted = localStorage.getItem("spotify_granted_scopes") ?? "unknown";
           setPlaylistError(`Error ${e.status ?? "?"}: ${e.message} | granted scopes: ${granted}`);
         }
@@ -386,14 +434,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedPlaylist, token]);
-
-  function logout() {
-    localStorage.removeItem("spotify_token");
-    setToken(""); setSelectedTrack(null); setAudioFeatures(null);
-    setMatches([]); setMatchAttempted(false); setSearchResults([]); setTrackGenres([]);
-    setPlaylists([]); setSelectedPlaylist(null); setPlaylistTracks([]); setPlaylistError("");
-  }
+  }, [selectedPlaylist, token, logout]);
 
   const searchTracks = useCallback(async () => {
     if (!searchQuery.trim()) return;
@@ -404,11 +445,11 @@ export default function App() {
       setSearchResults(data.tracks.items);
     } catch (e) {
       setError(e.message);
-      if (e.message.includes("401")) logout();
+      if (e.status === 401) logout();
     } finally {
       setLoading(false);
     }
-  }, [searchQuery, token]);
+  }, [searchQuery, token, logout]);
 
   const selectTrack = useCallback(
     async (track) => {
@@ -438,12 +479,13 @@ export default function App() {
         }
       } catch (e) {
         setError("Couldn't fetch audio features: " + e.message);
+        if (e.status === 401) logout();
         setAudioFeatures({ key: -1, mode: 0, tempo: 0 });
       } finally {
         setLoading(false);
       }
     },
-    [token],
+    [token, logout],
   );
 
   const findMatches = useCallback(async () => {
@@ -529,7 +571,11 @@ export default function App() {
           spotifyId: selectedTrack.id,
           size: 100,
         });
-        const recData = await fetch(`/api/reccobeats?${params}`).then((r) => r.json());
+        const recRes = await fetch(`/api/reccobeats?${params}`);
+        const recData = await recRes.json().catch(() => ({}));
+        if (!recRes.ok) {
+          throw new Error(recData.error?.message ?? recData.error ?? `Recommendations failed (${recRes.status})`);
+        }
         const seenReccoIds = new Set([selectedTrack.id]);
         const reccoTracks = (recData.content ?? [])
           .filter((t) => {
@@ -622,11 +668,11 @@ export default function App() {
       setMatches(matched);
     } catch (e) {
       setError(e.message);
-      if (e.message.includes("401")) logout();
+      if (e.status === 401) logout();
     } finally {
       setMatchLoading(false);
     }
-  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres]);
+  }, [audioFeatures, selectedTrack, token, bpmTolerance, matchSource, filterByGenre, trackGenres, logout]);
 
   const genreDisplay = trackGenres.slice(0, 3).join(" · ");
 
